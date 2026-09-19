@@ -42,7 +42,10 @@ pub struct Watch {
     warned_clock: bool,
     /// Said once, when omakeel speaks a protocol this doesn't know.
     warned_version: bool,
-    /// When a current fix last arrived, so a passage can't outlive it.
+    /// When a current fix last arrived, by this machine's clock, so a passage
+    /// can't outlive it. The receiver's own clock is no use here: the two are
+    /// allowed to differ, and comparing across them would close a passage on
+    /// the first dropout, or never.
     last_fix: i64,
     /// When the day's totals last reached the disk.
     last_save: i64,
@@ -105,7 +108,9 @@ impl Watch {
         if let Some(complaint) = complaint {
             wrote.extend(self.say(at, complaint)?);
         }
-        wrote.extend(self.roll_over(at)?);
+        // Always this machine's clock, so a receiver a little out of step
+        // can't flip the log between two days around midnight.
+        wrote.extend(self.roll_over(now)?);
 
         if !self.has_fix {
             self.has_fix = true;
@@ -119,7 +124,7 @@ impl Watch {
             wrote.extend(self.say(at, line)?);
         }
 
-        self.last_fix = at;
+        self.last_fix = now;
         let speed = fix.sog_kn.unwrap_or(0.0);
         if !self.underway && speed >= self.settings.underway_kn {
             self.underway = true;
@@ -288,10 +293,11 @@ impl Watch {
         Ok(wrote)
     }
 
-    /// Close the day at local midnight and start the next one.
+    /// Close the day at local midnight and start the next one. The day is
+    /// this machine's, and it only ever moves forward.
     fn roll_over(&mut self, at: i64) -> io::Result<Vec<String>> {
         let date = time::local(at).date();
-        if date == self.day.date {
+        if date <= self.day.date {
             return Ok(Vec::new());
         }
         if let Some(track) = self.track.take() {
@@ -575,6 +581,55 @@ mod tests {
         }
         let text = fs::read_to_string(watch.day_path()).unwrap();
         assert_eq!(text.matches("speaks protocol 2").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn a_receiver_out_of_step_does_not_close_the_passage() {
+        let s = settings("skew");
+        let mut watch = Watch::new(s).unwrap();
+        let now = time::now();
+        // Twenty-five minutes behind, inside the hour the log tolerates.
+        let receiver = now - 1500;
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, receiver), now)
+            .unwrap();
+        // A ten-second dropout is not the end of a passage.
+        watch.update(keel::Update::Lost, now + 10).unwrap();
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(!text.contains("the passage is closed"), "{text}");
+    }
+
+    #[test]
+    fn a_receiver_out_of_step_does_not_flip_the_day() {
+        let s = settings("flip");
+        let vault = s.vault.clone();
+        let mut watch = Watch::new(s).unwrap();
+        let midnight = {
+            let now = time::now();
+            let l = time::local(now);
+            now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second) + 86_400
+        };
+        // The receiver is half an hour behind as the day turns.
+        for step in 0..10 {
+            let now = midnight - 300 + step * 120;
+            watch
+                .update(fix(37.8663, -122.3148, 5.0, now - 1800), now)
+                .unwrap();
+            watch.update(keel::Update::Lost, now + 1).unwrap();
+        }
+        let days: Vec<_> = fs::read_dir(vault.join("2026").join("09"))
+            .map(|d| d.flatten().collect())
+            .unwrap_or_default();
+        assert!(days.len() <= 2, "the log flipped between days: {days:?}");
+        let tracks: Vec<_> = fs::read_dir(vault.join("tracks"))
+            .map(|d| d.flatten().collect())
+            .unwrap_or_default();
+        assert!(
+            tracks.len() <= 2,
+            "one passage made {} tracks",
+            tracks.len()
+        );
+        let _ = fs::remove_dir_all(&vault);
     }
 
     #[test]

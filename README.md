@@ -55,7 +55,8 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
 - **Leaves your writing alone.** Your prose, your headings and any front matter
   you add are copied through untouched, and every save merges with what's on
   disk, so an entry you write while the log is running is never overwritten. A
-  note that isn't text is never rewritten at all.
+  note that isn't text is never rewritten at all, and a total you correct by
+  hand stands.
 - **Commits as it goes**, and pushes when there is a connection. Offshore there
   won't be one for weeks, which is not an error.
 

@@ -37,16 +37,20 @@ lines, same order, lists and all. If the block's markers are missing or out of
 order, the file is left alone and a fresh block is added at the end, so a
 half-edited note is never swallowed.
 
-The markers only count on a line of their own, so prose that mentions one is
-just prose.
+The markers only count when they start a line of their own, so a marker you
+quote in prose or indent in a code block is just text. If a stray begin marker
+is left in the file, the block is taken as the last begin before the end.
 
 Four rules keep your writing safe:
 
 1. **Every save re-reads the file and merges.** An entry written by another
    process — `omalogbook note`, on watch — is never overwritten by the running
-   log, and the day's totals only ever move forward.
+   log. The day's totals move forward on their own, but a total you correct by
+   hand stands: omalogbook remembers what it last wrote, and anything else on
+   disk is yours.
 2. **A note that isn't text is never rewritten.** If the file can't be read as
-   UTF-8, omalogbook reports it and leaves it exactly as it is.
+   UTF-8, omalogbook reports it and leaves it exactly as it is. Move it aside
+   and the log picks up again at the next entry.
 3. **Write, then rename.** The note is written to a temporary file and renamed
    into place, so it is either the old one or the new one, never half of
    either.
@@ -59,6 +63,10 @@ Four rules keep your writing safe:
 ```
 - **09:15** (16:15 UTC) · 37°52.0′N 122°18.9′W · 245° · 5.1 kn — under way
 ```
+
+Days turn over on this machine's clock, never the receiver's, and only ever
+forward — otherwise a receiver a little out of step would flip the log between
+two days around midnight.
 
 Local time first, then UTC when the boat isn't on Greenwich, then position in
 degrees and decimal minutes, course over ground, speed over ground, and what

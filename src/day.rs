@@ -46,6 +46,20 @@ pub struct Day {
     tracks: Vec<String>,
     /// False when the file on disk isn't text: then it is left alone.
     readable: bool,
+    /// The totals as omalogbook last wrote them: distance, fastest, seconds.
+    /// A value on disk that differs from these was changed by the crew.
+    written: (f64, f64, i64),
+}
+
+/// The day's total, given what is on disk and what was last written there.
+/// Anything else on disk is the crew's own correction, and it stands.
+fn merge(mine: f64, written: f64, disk: &str) -> f64 {
+    let disk_value = disk.parse::<f64>().unwrap_or(0.0);
+    if (disk_value - written).abs() > f64::EPSILON {
+        disk_value
+    } else {
+        mine.max(disk_value)
+    }
 }
 
 /// `<vault>/2026/09/2026-09-18.md`, a year and month deep so a long voyage
@@ -75,6 +89,7 @@ impl Day {
             underway_secs: 0,
             tracks: Vec::new(),
             readable: true,
+            written: (0.0, 0.0, 0),
         };
         match read(&path) {
             Ok(Some(text)) => {
@@ -98,13 +113,15 @@ impl Day {
     fn merge_totals(&mut self, text: &str) {
         for (key, value) in front_pairs(text) {
             match key.as_str() {
-                "distance_nm" => {
-                    self.distance_nm = self.distance_nm.max(value.parse().unwrap_or(0.0))
-                }
-                "max_sog_kn" => self.max_sog_kn = self.max_sog_kn.max(value.parse().unwrap_or(0.0)),
+                "distance_nm" => self.distance_nm = merge(self.distance_nm, self.written.0, &value),
+                "max_sog_kn" => self.max_sog_kn = merge(self.max_sog_kn, self.written.1, &value),
                 "hours_underway" => {
-                    let secs = (value.parse::<f64>().unwrap_or(0.0) * 3600.0).round() as i64;
-                    self.underway_secs = self.underway_secs.max(secs);
+                    let merged = merge(
+                        self.underway_secs as f64 / 3600.0,
+                        self.written.2 as f64 / 3600.0,
+                        &value,
+                    );
+                    self.underway_secs = (merged * 3600.0).round() as i64;
                 }
                 "tracks" => {
                     for t in value.trim_matches(['[', ']']).split(',') {
@@ -141,7 +158,11 @@ impl Day {
     /// The file is replaced only once it is complete on disk.
     pub fn save(&mut self) -> io::Result<()> {
         if !self.readable {
-            return Err(self.left_alone());
+            // It may have been moved aside since; look once more.
+            match read(&self.path) {
+                Ok(_) => self.readable = true,
+                Err(Unreadable) => return Err(self.left_alone()),
+            }
         }
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -169,6 +190,16 @@ impl Day {
         fs::rename(&temp, &self.path)?;
         self.had_entries = had || !self.pending.is_empty();
         self.pending.clear();
+        // Rounded as the file has them, so reading them back matches.
+        self.written = (
+            format!("{:.1}", self.distance_nm).parse().unwrap_or(0.0),
+            format!("{:.1}", self.max_sog_kn).parse().unwrap_or(0.0),
+            (format!("{:.2}", self.underway_secs as f64 / 3600.0)
+                .parse::<f64>()
+                .unwrap_or(0.0)
+                * 3600.0)
+                .round() as i64,
+        );
         Ok(())
     }
 
@@ -245,7 +276,7 @@ impl Day {
                 out.push_str(&format!("{key}: {value}\n"));
             }
         }
-        out.push_str("---\n\n");
+        out.push_str("---\n");
         out
     }
 
@@ -301,11 +332,16 @@ fn block_bounds(body: &str) -> Option<(usize, usize)> {
     let mut start = None;
     let mut offset = 0;
     for line in body.split_inclusive('\n') {
-        let trimmed = line.trim();
-        if start.is_none() && trimmed == BEGIN {
+        // trim_end only: an indented marker is quoted prose or a code block.
+        let marker = line.trim_end();
+        if marker == BEGIN {
+            // The last begin before the end wins, so a stray one left in the
+            // file takes prose with it no more than once.
             start = Some(offset);
-        } else if start.is_some() && trimmed == END {
-            return start.map(|s| (s, offset + line.len() - trailing_newline(line)));
+        } else if marker == END
+            && let Some(s) = start
+        {
+            return Some((s, offset + line.len() - trailing_newline(line)));
         }
         offset += line.len();
     }
@@ -526,6 +562,94 @@ mod tests {
         );
         assert!(text.contains("distance_nm: 12.4"), "{text}");
         assert!(text.contains("- **09:15**"), "entries lost:\n{text}");
+    }
+
+    #[test]
+    fn the_note_does_not_grow_blank_lines() {
+        let dir = tempdir("blanks");
+        let mut d = day(&dir);
+        d.save().unwrap();
+        let first = note(&dir);
+        for _ in 0..6 {
+            d.save().unwrap();
+        }
+        assert_eq!(note(&dir), first, "the note changed without an entry");
+        assert!(!note(&dir).contains("\n\n\n"), "{}", note(&dir));
+    }
+
+    #[test]
+    fn a_marker_inside_a_code_block_is_only_prose() {
+        let dir = tempdir("fenced");
+        day(&dir).save().unwrap();
+        let path = path_for(&dir, "2026-09-18");
+        let quoted = format!(
+            "# 2026-09-18 · Dash\n\nFrom the docs:\n\n    {BEGIN}\n    ...\n    {END}\n\nMy own notes below."
+        );
+        fs::write(&path, note(&dir).replace("# 2026-09-18 · Dash", &quoted)).unwrap();
+
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        d.push("- **12:00** · stopped".into());
+        d.save().unwrap();
+
+        let text = note(&dir);
+        assert!(text.contains("My own notes below."), "prose lost:\n{text}");
+        assert!(text.contains("    <!-- omalogbook:begin -->"), "{text}");
+        assert!(text.contains("- **09:15**"), "entries lost:\n{text}");
+    }
+
+    #[test]
+    fn an_orphan_marker_is_swallowed_no_further_on_a_second_save() {
+        let dir = tempdir("orphan");
+        let path = path_for(&dir, "2026-09-18");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, format!("Notes.\n\n{BEGIN}\nlost marker\n")).unwrap();
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        d.push("- **10:00** · under way".into());
+        d.save().unwrap();
+        d.push("- **11:00** · still going".into());
+        d.save().unwrap();
+        let text = note(&dir);
+        assert!(text.contains("Notes."), "{text}");
+        assert!(
+            text.contains("lost marker"),
+            "prose lost on the second save:\n{text}"
+        );
+        assert!(
+            text.contains("- **10:00**") && text.contains("- **11:00**"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_total_the_crew_corrected_stands() {
+        let dir = tempdir("corrected");
+        let mut d = day(&dir);
+        d.max_sog_kn = 42.0; // a bad fix, logged
+        d.save().unwrap();
+        let path = path_for(&dir, "2026-09-18");
+        fs::write(
+            &path,
+            note(&dir).replace("max_sog_kn: 42.0", "max_sog_kn: 6.2"),
+        )
+        .unwrap();
+
+        d.push("- **12:00** · stopped".into());
+        d.save().unwrap();
+        assert!(note(&dir).contains("max_sog_kn: 6.2"), "{}", note(&dir));
+    }
+
+    #[test]
+    fn a_note_that_becomes_readable_again_is_written_again() {
+        let dir = tempdir("unlatch");
+        let path = path_for(&dir, "2026-09-18");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"\xff\xfe not text").unwrap();
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        d.push("- **10:00** · under way".into());
+        assert!(d.save().is_err());
+        fs::remove_file(&path).unwrap(); // the crew moves it aside
+        d.save().unwrap();
+        assert!(note(&dir).contains("- **10:00**"));
     }
 
     #[test]
