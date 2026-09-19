@@ -12,6 +12,11 @@ impl Lock {
     /// Wait for the vault's lock. Blocks, because every writer here is quick.
     pub fn take(vault: &Path) -> io::Result<Lock> {
         fs::create_dir_all(vault)?;
+        // The lock belongs to this machine, not to the log's history.
+        let ignore = vault.join(".gitignore");
+        if !ignore.exists() {
+            let _ = fs::write(&ignore, ".omalogbook.lock\n");
+        }
         let file = fs::OpenOptions::new()
             .create(true)
             .append(true)

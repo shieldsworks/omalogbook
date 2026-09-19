@@ -39,6 +39,14 @@ pub fn parse_utc(s: &str) -> Option<i64> {
     Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
+/// Is this a date the calendar has? `2026-02-31` is not.
+pub fn valid_date(date: &str) -> bool {
+    let Some(epoch) = parse_utc(&format!("{date}T00:00:00Z")) else {
+        return false;
+    };
+    utc(epoch).date() == date
+}
+
 /// A moment in the machine's local time zone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Local {
@@ -162,6 +170,23 @@ mod tests {
     fn utc_round_trips() {
         for epoch in [0, 1_789_333_210, 2_000_000_000, -86_400] {
             assert_eq!(parse_utc(&iso_utc(epoch)), Some(epoch), "{epoch}");
+        }
+    }
+
+    #[test]
+    fn a_date_the_calendar_hasnt_is_refused() {
+        for good in ["2026-09-18", "2024-02-29", "1970-01-01"] {
+            assert!(valid_date(good), "{good}");
+        }
+        for bad in [
+            "2026-02-31",
+            "2026-13-01",
+            "2026-09-31",
+            "x",
+            "",
+            "2026-9-8",
+        ] {
+            assert!(!valid_date(bad), "{bad}");
         }
     }
 

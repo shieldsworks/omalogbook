@@ -168,7 +168,7 @@ fn path(args: &[&str]) -> ExitCode {
         if *arg == "--date"
             && let Some(value) = it.next()
         {
-            if time::parse_utc(&format!("{value}T00:00:00Z")).is_none() {
+            if !time::valid_date(value) {
                 eprintln!("omalogbook: --date wants a day like 2026-09-18");
                 return ExitCode::from(64);
             }

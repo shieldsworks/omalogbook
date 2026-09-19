@@ -96,12 +96,30 @@ pub fn follow(socket: PathBuf) -> mpsc::Receiver<Update> {
             match UnixStream::connect(&socket).await {
                 Ok(stream) => {
                     connected = true;
-                    let mut lines = BufReader::new(stream).take(MAX_LINE).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        if let Some(update) = read(&line)
-                            && tx.send(update).await.is_err()
-                        {
-                            return;
+                    let mut reader = BufReader::new(stream);
+                    let mut line = Vec::new();
+                    loop {
+                        line.clear();
+                        // The cap is per line, so a long day on the socket
+                        // can't end the connection; only one huge line can.
+                        let read_line = (&mut reader)
+                            .take(MAX_LINE)
+                            .read_until(b'\n', &mut line)
+                            .await;
+                        match read_line {
+                            Ok(0) => break,
+                            Ok(_) if !line.ends_with(b"\n") => break, // a line past the cap
+                            Ok(_) => {
+                                let Ok(text) = std::str::from_utf8(&line) else {
+                                    continue;
+                                };
+                                if let Some(update) = read(text.trim_end())
+                                    && tx.send(update).await.is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            Err(_) => break,
                         }
                     }
                 }

@@ -18,8 +18,8 @@ date: 2026-09-18
 boat: Dash
 distance_nm: 12.4
 max_sog_kn: 6.1
-hours_underway: 3.2
-tracks: ["tracks/2026-09-18-0915.gpx"]
+hours_underway: 3.20
+tracks: ["tracks/2026-09-18-091504.gpx"]
 ---
 
 # 2026-09-18 · Dash
@@ -38,7 +38,7 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
 
 **Day's run** 12.4 nm · **fastest** 6.1 kn · **under way** 3 h 12 min
 
-**Track** [tracks/2026-09-18-0915.gpx](tracks/2026-09-18-0915.gpx)
+**Track** [tracks/2026-09-18-091504.gpx](tracks/2026-09-18-091504.gpx)
 
 <!-- omalogbook:end -->
 ```
@@ -53,8 +53,9 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
 - **Takes your own entries.** `omalogbook note "Reefed. Wind up to 22."` from
   any terminal, on watch, without opening an editor.
 - **Leaves your writing alone.** Your prose, your headings and any front matter
-  you add are copied through untouched. A note it cannot parse is never
-  rewritten.
+  you add are copied through untouched, and every save merges with what's on
+  disk, so an entry you write while the log is running is never overwritten. A
+  note that isn't text is never rewritten at all.
 - **Commits as it goes**, and pushes when there is a connection. Offshore there
   won't be one for weeks, which is not an error.
 

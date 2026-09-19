@@ -30,7 +30,14 @@ impl Track {
     /// A track named for when it started: `tracks/2026-09-18-0915.gpx`.
     pub fn start(vault: &Path, epoch: i64, boat: &str) -> Track {
         let at = time::local(epoch);
-        let relative = format!("tracks/{}-{:02}{:02}.gpx", at.date(), at.hour, at.minute);
+        // Seconds as well as minutes: two passages can start in one minute.
+        let relative = format!(
+            "tracks/{}-{:02}{:02}{:02}.gpx",
+            at.date(),
+            at.hour,
+            at.minute,
+            at.second
+        );
         Track {
             path: vault.join(&relative),
             name: format!("{boat} {} {}", at.date(), at.clock()),

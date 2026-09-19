@@ -40,6 +40,12 @@ pub struct Watch {
     opened: bool,
     /// Said once, when the receiver's clock and this machine's disagree.
     warned_clock: bool,
+    /// Said once, when omakeel speaks a protocol this doesn't know.
+    warned_version: bool,
+    /// When a current fix last arrived, so a passage can't outlive it.
+    last_fix: i64,
+    /// When the day's totals last reached the disk.
+    last_save: i64,
 }
 
 impl Watch {
@@ -59,6 +65,9 @@ impl Watch {
             has_fix: false,
             opened: false,
             warned_clock: false,
+            warned_version: false,
+            last_fix: 0,
+            last_save: 0,
         })
     }
 
@@ -66,11 +75,27 @@ impl Watch {
     pub fn update(&mut self, update: keel::Update, now: i64) -> io::Result<Vec<String>> {
         match update {
             keel::Update::Fix(Some(fix)) if fix.current => self.moved(fix, now),
-            keel::Update::Fix(_) | keel::Update::Lost => self.no_fix(now),
-            keel::Update::Incompatible(v) => self.say(
-                now,
-                format!("omakeel speaks protocol {v}; the log is paused"),
-            ),
+            keel::Update::Fix(_) | keel::Update::Lost => {
+                // Roll the day over here too: past midnight, a lost fix
+                // belongs to the new day, not to yesterday's note.
+                let mut wrote = self.roll_over(now)?;
+                wrote.extend(self.no_fix(now)?);
+                wrote.extend(self.abandon_passage(now)?);
+                Ok(wrote)
+            }
+            keel::Update::Incompatible(v) => {
+                // Every message would otherwise be an entry, all day long.
+                if self.warned_version {
+                    return Ok(Vec::new());
+                }
+                self.warned_version = true;
+                let mut wrote = self.roll_over(now)?;
+                wrote.extend(self.say(
+                    now,
+                    format!("omakeel speaks protocol {v}; the log is paused"),
+                )?);
+                Ok(wrote)
+            }
         }
     }
 
@@ -94,6 +119,7 @@ impl Watch {
             wrote.extend(self.say(at, line)?);
         }
 
+        self.last_fix = at;
         let speed = fix.sog_kn.unwrap_or(0.0);
         if !self.underway && speed >= self.settings.underway_kn {
             self.underway = true;
@@ -159,14 +185,21 @@ impl Watch {
             )?);
         }
 
-        // Still for long enough is the end of the passage.
+        // Still for long enough is the end of the passage. Only making way
+        // again clears it, so a boat swinging at anchor stays stopped.
         if speed <= self.settings.stopped_kn {
             let since = *self.slow_since.get_or_insert(at);
             if at - since >= i64::from(self.settings.stop_after_minutes) * 60 {
                 wrote.extend(self.stop(fix, at)?);
+                return Ok(wrote);
             }
-        } else {
+        } else if speed >= self.settings.underway_kn {
             self.slow_since = None;
+        }
+
+        // Keep the day's run on disk even when nothing is worth an entry.
+        if at - self.last_save >= 300 {
+            self.save()?;
         }
         Ok(wrote)
     }
@@ -234,6 +267,27 @@ impl Watch {
         self.say(now, "no fix".into())
     }
 
+    /// A passage with no fix behind it ends where the fix did: the receiver
+    /// went quiet, and the log will not invent the miles in between.
+    fn abandon_passage(&mut self, now: i64) -> io::Result<Vec<String>> {
+        let quiet_for = now - self.last_fix;
+        if !self.underway || quiet_for < i64::from(self.settings.stop_after_minutes) * 60 {
+            return Ok(Vec::new());
+        }
+        self.underway = false;
+        self.slow_since = None;
+        self.last = None;
+        if let Some(track) = self.track.take() {
+            track.save()?;
+            if !track.is_empty() {
+                self.day.add_track(&track.relative);
+            }
+        }
+        let wrote = self.say(now, "no fix for a while; the passage is closed".into())?;
+        self.commit(&format!("log: {} · passage closed", self.day.date));
+        Ok(wrote)
+    }
+
     /// Close the day at local midnight and start the next one.
     fn roll_over(&mut self, at: i64) -> io::Result<Vec<String>> {
         let date = time::local(at).date();
@@ -273,6 +327,7 @@ impl Watch {
 
     fn save(&mut self) -> io::Result<()> {
         let _lock = lock::Lock::take(&self.vault)?;
+        self.last_save = time::now();
         self.day.save()
     }
 
@@ -468,6 +523,58 @@ mod tests {
             .unwrap();
         let text = fs::read_to_string(watch.day_path()).unwrap();
         assert!(!text.contains("logging by this machine's clock"), "{text}");
+    }
+
+    #[test]
+    fn anchor_jitter_does_not_hold_a_passage_open() {
+        let s = settings("jitter");
+        let mut watch = Watch::new(s).unwrap();
+        let start = time::now();
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, start), start)
+            .unwrap();
+        // Swinging at anchor: mostly still, with the odd 0.8 kn sample.
+        for step in 1..=60 {
+            let at = start + step * 10;
+            let speed = if step % 7 == 0 { 0.8 } else { 0.1 };
+            watch
+                .update(fix(37.8663, -122.3148, speed, at), at)
+                .unwrap();
+        }
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(text.contains("stopped"), "the passage never ended:\n{text}");
+    }
+
+    #[test]
+    fn a_passage_does_not_outlive_the_fix() {
+        let s = settings("abandoned");
+        let mut watch = Watch::new(s).unwrap();
+        let start = time::now();
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, start), start)
+            .unwrap();
+        watch.update(keel::Update::Lost, start + 60).unwrap();
+        watch.update(keel::Update::Lost, start + 400).unwrap();
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(text.contains("the passage is closed"), "{text}");
+        assert!(
+            text.contains("tracks/"),
+            "the track should still be linked:\n{text}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_protocol_is_said_once() {
+        let s = settings("protocol");
+        let mut watch = Watch::new(s).unwrap();
+        let now = time::now();
+        for step in 0..20 {
+            watch
+                .update(keel::Update::Incompatible(2), now + step)
+                .unwrap();
+        }
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert_eq!(text.matches("speaks protocol 2").count(), 1, "{text}");
     }
 
     #[test]
