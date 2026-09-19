@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Open today's log in a terminal editor, from a launcher or a keybinding.
+#
+#   omalogbook-open            today
+#   omalogbook-open 2026-09-14 another day
+#
+# The editor opens with the vault as its working directory, so an editor that
+# knows about vaults (Obsidian's Neovim plugin, or :Telescope) sees the whole
+# log, not one file.
+set -euo pipefail
+
+book=${OMALOGBOOK:-omalogbook}
+command -v "$book" >/dev/null || { echo "omalogbook is not on PATH" >&2; exit 127; }
+
+if [ $# -gt 0 ]; then
+  note=$("$book" path --date "$1")
+else
+  note=$("$book" path)
+fi
+vault=$("$book" vault)
+mkdir -p "$(dirname "$note")"
+
+editor=${VISUAL:-${EDITOR:-nvim}}
+
+# Already in a terminal: just open it.
+if [ -t 1 ]; then
+  cd "$vault" && exec $editor "$note"
+fi
+
+# From a launcher: find a terminal. $TERMINAL wins, as Omarchy sets it.
+for candidate in ${TERMINAL:-} ghostty foot alacritty kitty wezterm xterm; do
+  [ -n "$candidate" ] || continue
+  if command -v "$candidate" >/dev/null; then
+    cd "$vault" && exec "$candidate" -e $editor "$note"
+  fi
+done
+
+echo "no terminal found; set \$TERMINAL" >&2
+exit 127

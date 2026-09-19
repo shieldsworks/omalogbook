@@ -1,0 +1,18 @@
+[package]
+name = "omalogbook"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "The ship's log for Omahoy: plain markdown and GPX, written from omakeel"
+license = "MIT"
+repository = "https://github.com/shieldsworks/omalogbook"
+homepage = "https://omahoy.org"
+
+[dependencies]
+serde_json = "1"
+# flock, so the daemon and `omalogbook note` never write the same day at once.
+libc = "0.2"
+tokio = { version = "1.53", features = ["rt", "net", "time", "sync", "io-util", "macros", "signal"] }
+
+[profile.release]
+debug = "line-tables-only"

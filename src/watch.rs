@@ -1,0 +1,496 @@
+//! The watch: omakeel's fixes become entries, tracks and a day's run.
+//!
+//! Every decision here is deliberately dull. A passage starts when the boat
+//! has been moving, ends when it has been still for a while, and the log
+//! writes what it saw. Nothing is inferred that the crew can't check.
+
+use crate::{
+    config::Settings,
+    day::{self, Day},
+    entry, geo, git, keel, lock, time,
+    track::{Point, Track},
+};
+use std::{io, path::PathBuf};
+
+/// A gap longer than this is the log having been stopped, or the receiver
+/// having been off: it does not count as time under way.
+const MAX_GAP_SECS: i64 = 300;
+
+/// How far the receiver's clock may be from this machine's before the log
+/// stops believing it. An hour covers a wrong time zone in the receiver and
+/// any ordinary drift.
+const CLOCK_TOLERANCE_SECS: i64 = 3600;
+
+/// Before this, the machine's own clock has plainly never been set.
+const CLOCK_LOOKS_UNSET: i64 = 1_577_836_800; // 2020-01-01
+
+pub struct Watch {
+    settings: Settings,
+    vault: PathBuf,
+    day: Day,
+    track: Option<Track>,
+    underway: bool,
+    /// Where and when the last counted position was.
+    last: Option<(f64, f64, i64)>,
+    last_point: i64,
+    last_entry: i64,
+    /// Since when the boat has been below the stopping speed.
+    slow_since: Option<i64>,
+    has_fix: bool,
+    opened: bool,
+    /// Said once, when the receiver's clock and this machine's disagree.
+    warned_clock: bool,
+}
+
+impl Watch {
+    pub fn new(settings: Settings) -> io::Result<Watch> {
+        let vault = settings.vault.clone();
+        let day = Day::open(&vault, &day::today(), &settings.boat)?;
+        Ok(Watch {
+            settings,
+            vault,
+            day,
+            track: None,
+            underway: false,
+            last: None,
+            last_point: 0,
+            last_entry: 0,
+            slow_since: None,
+            has_fix: false,
+            opened: false,
+            warned_clock: false,
+        })
+    }
+
+    /// One update from omakeel. Returns what it wrote, for the terminal.
+    pub fn update(&mut self, update: keel::Update, now: i64) -> io::Result<Vec<String>> {
+        match update {
+            keel::Update::Fix(Some(fix)) if fix.current => self.moved(fix, now),
+            keel::Update::Fix(_) | keel::Update::Lost => self.no_fix(now),
+            keel::Update::Incompatible(v) => self.say(
+                now,
+                format!("omakeel speaks protocol {v}; the log is paused"),
+            ),
+        }
+    }
+
+    fn moved(&mut self, fix: keel::Fix, now: i64) -> io::Result<Vec<String>> {
+        let (at, complaint) = self.stamp(fix.utc, now);
+        let mut wrote = Vec::new();
+        if let Some(complaint) = complaint {
+            wrote.extend(self.say(at, complaint)?);
+        }
+        wrote.extend(self.roll_over(at)?);
+
+        if !self.has_fix {
+            self.has_fix = true;
+            if self.opened {
+                wrote.extend(self.say(at, "fix again".into())?);
+            }
+        }
+        if !self.opened {
+            self.opened = true;
+            let line = format!("log opened · {}", day::position(fix.lat, fix.lon));
+            wrote.extend(self.say(at, line)?);
+        }
+
+        let speed = fix.sog_kn.unwrap_or(0.0);
+        if !self.underway && speed >= self.settings.underway_kn {
+            self.underway = true;
+            self.slow_since = None;
+            self.last = Some((fix.lat, fix.lon, at));
+            self.last_entry = at;
+            self.track = Some(Track::start(&self.vault, at, &self.settings.boat));
+            wrote.extend(self.log(
+                at,
+                entry::fix(
+                    time::local(at),
+                    time::utc(at),
+                    fix.lat,
+                    fix.lon,
+                    fix.sog_kn,
+                    fix.cog_deg,
+                    "under way",
+                ),
+            )?);
+        }
+
+        if !self.underway {
+            return Ok(wrote);
+        }
+
+        // The day's run, and the time it took, from fix to fix.
+        if let Some((lat, lon, was)) = self.last {
+            let gap = at - was;
+            if (0..=MAX_GAP_SECS).contains(&gap) {
+                self.day.distance_nm += geo::distance_nm((lat, lon), (fix.lat, fix.lon));
+                self.day.underway_secs += gap;
+            }
+        }
+        self.last = Some((fix.lat, fix.lon, at));
+        self.day.max_sog_kn = self.day.max_sog_kn.max(speed);
+
+        if at - self.last_point >= i64::from(self.settings.point_seconds)
+            && let Some(track) = self.track.as_mut()
+        {
+            track.push(Point {
+                epoch: at,
+                lat: fix.lat,
+                lon: fix.lon,
+                sog_kn: fix.sog_kn,
+            });
+            self.last_point = at;
+            track.save()?;
+        }
+
+        if at - self.last_entry >= i64::from(self.settings.every_minutes) * 60 {
+            self.last_entry = at;
+            wrote.extend(self.log(
+                at,
+                entry::fix(
+                    time::local(at),
+                    time::utc(at),
+                    fix.lat,
+                    fix.lon,
+                    fix.sog_kn,
+                    fix.cog_deg,
+                    "",
+                ),
+            )?);
+        }
+
+        // Still for long enough is the end of the passage.
+        if speed <= self.settings.stopped_kn {
+            let since = *self.slow_since.get_or_insert(at);
+            if at - since >= i64::from(self.settings.stop_after_minutes) * 60 {
+                wrote.extend(self.stop(fix, at)?);
+            }
+        } else {
+            self.slow_since = None;
+        }
+        Ok(wrote)
+    }
+
+    fn stop(&mut self, fix: keel::Fix, at: i64) -> io::Result<Vec<String>> {
+        self.underway = false;
+        self.slow_since = None;
+        self.last = None;
+        if let Some(track) = self.track.take() {
+            track.save()?;
+            if !track.is_empty() {
+                self.day.add_track(&track.relative);
+            }
+        }
+        let line = entry::fix(
+            time::local(at),
+            time::utc(at),
+            fix.lat,
+            fix.lon,
+            None,
+            None,
+            "stopped",
+        );
+        let wrote = self.log(at, line)?;
+        self.commit(&format!("log: {} · stopped", self.day.date));
+        Ok(wrote)
+    }
+
+    /// Which clock an entry is stamped by.
+    ///
+    /// The receiver's time is better than this machine's, until it isn't: a
+    /// GPS that reports the wrong week, or a recording being replayed, would
+    /// otherwise file entries days away from the day they were written. So it
+    /// is believed while it agrees with this machine's clock, or while this
+    /// machine's clock has obviously never been set.
+    fn stamp(&mut self, receiver: Option<i64>, now: i64) -> (i64, Option<String>) {
+        let Some(receiver) = receiver else {
+            return (now, None);
+        };
+        if (receiver - now).abs() <= CLOCK_TOLERANCE_SECS || now < CLOCK_LOOKS_UNSET {
+            return (receiver, None);
+        }
+        if self.warned_clock {
+            return (now, None);
+        }
+        self.warned_clock = true;
+        let days = (now - receiver) as f64 / 86_400.0;
+        (
+            now,
+            Some(format!(
+                "the receiver's clock reads {:.1} days {}; logging by this machine's clock",
+                days.abs(),
+                if days > 0.0 { "behind" } else { "ahead" }
+            )),
+        )
+    }
+
+    fn no_fix(&mut self, now: i64) -> io::Result<Vec<String>> {
+        if !self.has_fix {
+            return Ok(Vec::new());
+        }
+        self.has_fix = false;
+        // Keep the passage open: a receiver drops out for a minute at a time,
+        // and the boat is still sailing.
+        self.say(now, "no fix".into())
+    }
+
+    /// Close the day at local midnight and start the next one.
+    fn roll_over(&mut self, at: i64) -> io::Result<Vec<String>> {
+        let date = time::local(at).date();
+        if date == self.day.date {
+            return Ok(Vec::new());
+        }
+        if let Some(track) = self.track.take() {
+            track.save()?;
+            if !track.is_empty() {
+                self.day.add_track(&track.relative);
+            }
+        }
+        // A day with nothing in it leaves no note behind.
+        if !self.day.is_empty() {
+            self.save()?;
+            self.commit(&format!("log: {}", self.day.date));
+        }
+        self.day = Day::open(&self.vault, &date, &self.settings.boat)?;
+        self.last_entry = 0;
+        self.last_point = 0;
+        if self.underway {
+            self.track = Some(Track::start(&self.vault, at, &self.settings.boat));
+        }
+        Ok(vec![format!("{date} · a new day")])
+    }
+
+    fn say(&mut self, at: i64, text: String) -> io::Result<Vec<String>> {
+        let line = entry::event(time::local(at), time::utc(at), &text);
+        self.log(at, line)
+    }
+
+    fn log(&mut self, _at: i64, line: String) -> io::Result<Vec<String>> {
+        self.day.push(line.clone());
+        self.save()?;
+        Ok(vec![line])
+    }
+
+    fn save(&mut self) -> io::Result<()> {
+        let _lock = lock::Lock::take(&self.vault)?;
+        self.day.save()
+    }
+
+    /// Commit, when the vault is a repo and the settings allow it. A failure
+    /// is reported once and never stops the log.
+    pub fn commit(&self, message: &str) {
+        if !self.settings.git {
+            return;
+        }
+        match git::commit(&self.vault, message) {
+            Ok(true) => {
+                if let Err(e) = git::push(&self.vault) {
+                    eprintln!("omalogbook: could not push ({e}); the log is safe on disk");
+                }
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("omalogbook: could not commit ({e}); the log is safe on disk"),
+        }
+    }
+
+    /// Write and commit everything before stopping.
+    pub fn close(&mut self) -> io::Result<()> {
+        if let Some(track) = self.track.take() {
+            track.save()?;
+            if !track.is_empty() {
+                self.day.add_track(&track.relative);
+            }
+        }
+        if self.day.is_empty() {
+            return Ok(());
+        }
+        self.save()?;
+        self.commit(&format!("log: {}", self.day.date));
+        Ok(())
+    }
+
+    pub fn day_path(&self) -> &std::path::Path {
+        &self.day.path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn settings(name: &str) -> Settings {
+        let vault =
+            std::env::temp_dir().join(format!("omalogbook-watch-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&vault);
+        Settings {
+            vault,
+            boat: "Dash".into(),
+            every_minutes: 60,
+            underway_kn: 1.0,
+            stopped_kn: 0.5,
+            stop_after_minutes: 5,
+            point_seconds: 10,
+            git: false,
+        }
+    }
+
+    fn fix(lat: f64, lon: f64, sog: f64, at: i64) -> keel::Update {
+        keel::Update::Fix(Some(keel::Fix {
+            lat,
+            lon,
+            sog_kn: Some(sog),
+            cog_deg: Some(245.0),
+            utc: Some(at),
+            current: true,
+        }))
+    }
+
+    /// A short sail: away from the berth, half an hour out, then still.
+    fn sail(watch: &mut Watch, start: i64) {
+        watch
+            .update(fix(37.8663, -122.3148, 0.1, start), start)
+            .unwrap();
+        for step in 1..=180 {
+            let at = start + step * 10;
+            watch
+                .update(fix(37.8663 + step as f64 * 0.0005, -122.3148, 5.0, at), at)
+                .unwrap();
+        }
+        for step in 1..=40 {
+            let at = start + 1800 + step * 10;
+            watch.update(fix(37.9563, -122.3148, 0.1, at), at).unwrap();
+        }
+    }
+
+    #[test]
+    fn writes_a_days_log_from_a_sail() {
+        let s = settings("sail");
+        let vault = s.vault.clone();
+        let mut watch = Watch::new(s).unwrap();
+        sail(&mut watch, 1_789_300_800);
+        watch.close().unwrap();
+
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(text.contains("log opened"), "{text}");
+        assert!(text.contains("under way"), "{text}");
+        assert!(text.contains("stopped"), "{text}");
+        assert!(
+            text.contains("**Day's run** 5."),
+            "day's run wrong:\n{text}"
+        );
+
+        let tracks: Vec<_> = fs::read_dir(vault.join("tracks"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(tracks.len(), 1);
+        let gpx = fs::read_to_string(tracks[0].path()).unwrap();
+        assert!(gpx.contains("<trkpt"));
+        assert!(
+            text.contains("tracks/"),
+            "the day should link its track:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_passage_survives_a_dropped_fix() {
+        let s = settings("dropout");
+        let mut watch = Watch::new(s).unwrap();
+        let start = 1_789_300_800;
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, start), start)
+            .unwrap();
+        watch.update(keel::Update::Lost, start + 30).unwrap();
+        watch
+            .update(fix(37.8700, -122.3148, 5.0, start + 60), start + 60)
+            .unwrap();
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(text.contains("no fix"));
+        assert!(text.contains("fix again"));
+        assert!(
+            !text.contains("stopped"),
+            "a dropout is not the end of a passage"
+        );
+    }
+
+    #[test]
+    fn a_long_gap_is_not_counted_as_sailing() {
+        let s = settings("gap");
+        let mut watch = Watch::new(s).unwrap();
+        let start = 1_789_300_800;
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, start), start)
+            .unwrap();
+        // An hour later, 5 nm away: the log was off, so neither counts.
+        let later = start + 3600;
+        watch
+            .update(fix(37.9500, -122.3148, 5.0, later), later)
+            .unwrap();
+        watch.close().unwrap();
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(text.contains("**Day's run** 0.0 nm"), "{text}");
+        assert!(text.contains("**under way** 0 min"), "{text}");
+    }
+
+    #[test]
+    fn a_receiver_days_out_does_not_move_the_log() {
+        let s = settings("clock");
+        let vault = s.vault.clone();
+        let mut watch = Watch::new(s).unwrap();
+        let now = time::now();
+        let today = watch.day_path().to_path_buf();
+        // A replayed sail, or a receiver with the wrong week: five days back.
+        let stale = now - 5 * 86_400;
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, stale), now)
+            .unwrap();
+        assert_eq!(watch.day_path(), today, "the log jumped to another day");
+        let text = fs::read_to_string(&today).unwrap();
+        assert!(text.contains("5.0 days behind"), "{text}");
+        assert!(text.contains("under way"));
+        // Said once, not on every fix.
+        watch
+            .update(fix(37.8700, -122.3148, 5.0, stale + 10), now + 10)
+            .unwrap();
+        let text = fs::read_to_string(&today).unwrap();
+        assert_eq!(text.matches("days behind").count(), 1, "{text}");
+        let _ = fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn a_receiver_in_step_keeps_its_own_time() {
+        let s = settings("in-step");
+        let mut watch = Watch::new(s).unwrap();
+        let now = time::now();
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, now - 30), now)
+            .unwrap();
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(!text.contains("logging by this machine's clock"), "{text}");
+    }
+
+    #[test]
+    fn midnight_starts_a_new_note() {
+        let s = settings("midnight");
+        let vault = s.vault.clone();
+        let mut watch = Watch::new(s).unwrap();
+        // 23:59:30 local and a minute later, whatever the machine's zone.
+        let midnight = {
+            let now = time::now();
+            let l = time::local(now);
+            now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second) + 86_400
+        };
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, midnight - 30), midnight - 30)
+            .unwrap();
+        let first = watch.day_path().to_path_buf();
+        watch
+            .update(fix(37.8700, -122.3148, 5.0, midnight + 30), midnight + 30)
+            .unwrap();
+        watch.close().unwrap();
+        assert_ne!(first, watch.day_path());
+        assert!(first.exists() && watch.day_path().exists());
+        let _ = fs::remove_dir_all(&vault);
+    }
+}
