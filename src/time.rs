@@ -47,6 +47,14 @@ pub fn valid_date(date: &str) -> bool {
     utc(epoch).date() == date
 }
 
+/// Which day a date names, counted from 1970-01-01, for comparing two of them.
+pub fn day_index(date: &str) -> Option<i64> {
+    valid_date(date)
+        .then(|| parse_utc(&format!("{date}T00:00:00Z")))??
+        .div_euclid(86_400)
+        .into()
+}
+
 /// A moment in the machine's local time zone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Local {

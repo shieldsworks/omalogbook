@@ -245,6 +245,12 @@ impl Watch {
             return (now, None);
         };
         if (receiver - now).abs() <= CLOCK_TOLERANCE_SECS || now < CLOCK_LOOKS_UNSET {
+            // ...unless the two clocks fall on different days, which happens
+            // for an hour around midnight. An entry stamped 23:10 at the top
+            // of the next day's note reads as a mistake, because it is.
+            if time::local(receiver).date() != time::local(now).date() {
+                return (now, None);
+            }
             return (receiver, None);
         }
         if self.warned_clock {
@@ -294,10 +300,22 @@ impl Watch {
     }
 
     /// Close the day at local midnight and start the next one. The day is
-    /// this machine's, and it only ever moves forward.
+    /// this machine's.
+    ///
+    /// Going back a single day is skew around midnight, and following it would
+    /// write the same hours into two notes. A bigger step back is a clock that
+    /// was plainly wrong — set at boot, or stepped by NTP — and has to be
+    /// followed, or the log would stay on the wrong day for good.
     fn roll_over(&mut self, at: i64) -> io::Result<Vec<String>> {
         let date = time::local(at).date();
-        if date <= self.day.date {
+        if date == self.day.date {
+            return Ok(Vec::new());
+        }
+        let step_back = match (time::day_index(&self.day.date), time::day_index(&date)) {
+            (Some(was), Some(now)) => was - now,
+            _ => 0,
+        };
+        if step_back == 1 {
             return Ok(Vec::new());
         }
         if let Some(track) = self.track.take() {
@@ -630,6 +648,60 @@ mod tests {
             tracks.len()
         );
         let _ = fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn a_clock_set_wrong_at_boot_is_followed_later() {
+        let s = settings("stepped");
+        let vault = s.vault.clone();
+        let mut watch = Watch::new(s).unwrap();
+        // The machine boots a week ahead, then is corrected.
+        let ahead = time::now() + 7 * 86_400;
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, ahead), ahead)
+            .unwrap();
+        let wrong_day = watch.day_path().to_path_buf();
+        // Skew inside a day is ignored...
+        let soon = ahead + 3600;
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, soon - 90_000), soon)
+            .unwrap();
+        assert_eq!(watch.day_path(), wrong_day);
+        // ...but a day later on this clock, the correction is followed.
+        let corrected = ahead + 86_401;
+        watch
+            .update(
+                fix(37.8663, -122.3148, 5.0, corrected - 8 * 86_400),
+                corrected - 8 * 86_400,
+            )
+            .unwrap();
+        assert_ne!(
+            watch.day_path(),
+            wrong_day,
+            "the log is stuck on a wrong day"
+        );
+        let _ = fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn an_entry_is_stamped_with_the_day_it_is_filed_under() {
+        let s = settings("stamp-day");
+        let mut watch = Watch::new(s).unwrap();
+        let now = time::now();
+        let l = time::local(now);
+        let midnight =
+            now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second)
+                + 86_400;
+        // Just past midnight here; the receiver is still on yesterday.
+        let at = midnight + 60;
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, at - 3000), at)
+            .unwrap();
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(
+            text.contains("**00:01**"),
+            "yesterday's clock in today's note:\n{text}"
+        );
     }
 
     #[test]

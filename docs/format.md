@@ -64,9 +64,11 @@ Four rules keep your writing safe:
 - **09:15** (16:15 UTC) · 37°52.0′N 122°18.9′W · 245° · 5.1 kn — under way
 ```
 
-Days turn over on this machine's clock, never the receiver's, and only ever
-forward — otherwise a receiver a little out of step would flip the log between
-two days around midnight.
+Days turn over on this machine's clock, never the receiver's. A step back of a
+single day is treated as skew and ignored, so a receiver a little out of step
+can't flip the log between two days around midnight; a bigger step back is a
+clock that was wrong, and is followed. Near midnight, an entry is stamped with
+the day it is filed under, not the receiver's.
 
 Local time first, then UTC when the boat isn't on Greenwich, then position in
 degrees and decimal minutes, course over ground, speed over ground, and what

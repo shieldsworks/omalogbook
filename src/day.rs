@@ -54,7 +54,11 @@ pub struct Day {
 /// The day's total, given what is on disk and what was last written there.
 /// Anything else on disk is the crew's own correction, and it stands.
 fn merge(mine: f64, written: f64, disk: &str) -> f64 {
-    let disk_value = disk.parse::<f64>().unwrap_or(0.0);
+    // A value that isn't a number isn't a correction; keep what we have
+    // rather than reading it as zero.
+    let Ok(disk_value) = disk.parse::<f64>() else {
+        return mine;
+    };
     if (disk_value - written).abs() > f64::EPSILON {
         disk_value
     } else {
@@ -95,6 +99,9 @@ impl Day {
             Ok(Some(text)) => {
                 day.had_entries = !entries_in(&text).is_empty();
                 day.merge_totals(&text);
+                // What is on disk is what was last written, so the first save
+                // adds to it instead of being read as a correction.
+                day.remember();
             }
             Ok(None) => {}
             Err(Unreadable) => day.readable = false,
@@ -190,7 +197,13 @@ impl Day {
         fs::rename(&temp, &self.path)?;
         self.had_entries = had || !self.pending.is_empty();
         self.pending.clear();
-        // Rounded as the file has them, so reading them back matches.
+        self.remember();
+        Ok(())
+    }
+
+    /// Note the totals as the file now has them, rounded as they are written,
+    /// so reading them back matches to the bit.
+    fn remember(&mut self) {
         self.written = (
             format!("{:.1}", self.distance_nm).parse().unwrap_or(0.0),
             format!("{:.1}", self.max_sog_kn).parse().unwrap_or(0.0),
@@ -200,12 +213,11 @@ impl Day {
                 * 3600.0)
                 .round() as i64,
         );
-        Ok(())
     }
 
     fn left_alone(&self) -> io::Error {
         io::Error::other(format!(
-            "{} is not text; leaving it alone",
+            "{} could not be read as text; leaving it alone",
             self.path.display()
         ))
     }
@@ -650,6 +662,37 @@ mod tests {
         fs::remove_file(&path).unwrap(); // the crew moves it aside
         d.save().unwrap();
         assert!(note(&dir).contains("- **10:00**"));
+    }
+
+    #[test]
+    fn a_total_that_is_not_a_number_is_not_a_correction() {
+        let dir = tempdir("nonsense");
+        let mut d = day(&dir);
+        d.save().unwrap();
+        let path = path_for(&dir, "2026-09-18");
+        fs::write(
+            &path,
+            note(&dir).replace("distance_nm: 12.4", "distance_nm: 12.4 nm"),
+        )
+        .unwrap();
+        d.push("- **12:00** · stopped".into());
+        d.save().unwrap();
+        let text = note(&dir);
+        assert!(text.contains("distance_nm: 12.4\n"), "{text}");
+        assert!(text.contains("**Day's run** 12.4 nm"), "{text}");
+    }
+
+    #[test]
+    fn totals_already_on_disk_are_added_to() {
+        let dir = tempdir("resume");
+        day(&dir).save().unwrap();
+        // A new run of the program, continuing the same day.
+        let mut second = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        assert_eq!(second.distance_nm, 12.4);
+        second.distance_nm += 3.0;
+        second.push("- **13:00** · under way".into());
+        second.save().unwrap();
+        assert!(note(&dir).contains("distance_nm: 15.4"), "{}", note(&dir));
     }
 
     #[test]
