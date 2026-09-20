@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "org.omahoy.logbook",
+  "name": "Omalogbook",
+  "version": "0.1.0",
+  "author": "Casey Shields",
+  "license": "MIT",
+  "homepage": "https://omahoy.org",
+  "description": "The ship's log: notes at the boat's position, in plain markdown and GPX",
+  "kinds": [
+    "panel"
+  ],
+  "entryPoints": {
+    "panel": "ui/Panel.qml"
+  }
+}

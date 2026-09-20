@@ -1,0 +1,292 @@
+import QtQuick
+import Quickshell
+import Quickshell.Io
+
+// The ship's log in a window of its own: a line to write in, the day's
+// entries under it, and the day's run at the foot. Run standalone
+// (ui/shell.qml) it owns its process; as the shell's panel the shell opens
+// and hides it.
+//
+// Writing is the point. The field keeps the focus, so a note on watch is
+// the words and Enter — no button to find with a tiller under your arm.
+Item {
+    id: app
+
+    // Set by the Omarchy shell when loaded as a panel.
+    property var shell: null
+    property var manifest: null
+    property bool standalone: true
+    property bool opened: standalone
+
+    function open(payload) {
+        opened = true;
+        Qt.callLater(() => field.forceActiveFocus());
+    }
+    function close() {
+        opened = false;
+    }
+    function dismiss() {
+        if (standalone) Qt.quit();
+        else if (shell) shell.hide("org.omahoy.logbook");
+        else opened = false;
+    }
+
+    property Theme theme: Theme {}
+    property Book book: Book {}
+
+    // Quickshell keeps a process alive after its last window closes.
+    Connections {
+        target: Quickshell
+        function onLastWindowClosed() { if (app.standalone) Qt.quit(); }
+    }
+
+    property string toastText: ""
+    function toast(text) {
+        toastText = text;
+        toastTimer.restart();
+    }
+    Timer { id: toastTimer; interval: 3500; onTriggered: app.toastText = "" }
+
+    Connections {
+        target: app.book
+        function onFiled(text) { app.toast("Logged."); }
+        function onRefused(message) { app.toast(message); }
+    }
+
+    function file() {
+        var words = field.text.trim();
+        if (words === "") return;
+        if (app.book.filing) {
+            app.toast("Still filing the last one.");
+            return;
+        }
+        if (app.book.note(words)) field.text = "";
+    }
+
+    // The day as a line: `12.4 nm · fastest 6.1 kn · under way 3 h 12 min`.
+    readonly property string totals: {
+        if (!app.book.read || app.book.entries.length === 0) return "";
+        var secs = app.book.underwaySecs;
+        var hours = Math.floor(secs / 3600), mins = Math.floor(secs % 3600 / 60);
+        var underway = hours > 0 ? hours + " h " + (mins < 10 ? "0" : "") + mins + " min" : mins + " min";
+        return app.book.distanceNm.toFixed(1) + " nm  ·  fastest " + app.book.maxSogKn.toFixed(1)
+            + " kn  ·  under way " + underway;
+    }
+
+    readonly property string emptyText: {
+        if (app.book.error !== "") return app.book.error;
+        if (!app.book.read || app.book.entries.length > 0) return "";
+        return "Nothing logged today.\n\nWrite a note above, or start the log with\nomalogbook run to keep the watch.";
+    }
+
+    // An entry without its markdown: `- **09:15** (16:15 UTC) · …` is for
+    // the file, not for a window.
+    function plain(line) {
+        return String(line).replace(/^-\s+/, "").replace(/\*\*/g, "");
+    }
+
+    // For checks, where no keyboard can be driven:
+    //   quickshell ipc -p ui/shell.qml call omalogbook status
+    IpcHandler {
+        target: "omalogbook"
+        function status(): string {
+            return JSON.stringify({date: app.book.date, boat: app.book.boat, entries: app.book.entries.length,
+                                   read: app.book.read, error: app.book.error, filing: app.book.filing,
+                                   opened: app.opened, night: app.theme.night});
+        }
+        function night(): void { app.theme.night = !app.theme.night; }
+        function note(text: string): void { app.book.note(text); }
+        function refresh(): void { app.book.refresh(); }
+    }
+
+    FloatingWindow {
+        id: win
+        title: "Omalogbook"
+        visible: app.opened
+        onVisibleChanged: {
+            if (!visible && app.opened) app.dismiss();
+            else if (visible) Qt.callLater(() => field.forceActiveFocus());
+        }
+        implicitWidth: Number(Quickshell.env("OMALOGBOOK_WIDTH")) || 460
+        implicitHeight: Number(Quickshell.env("OMALOGBOOK_HEIGHT")) || 700
+        color: app.theme.background
+
+        // Plain text: an entry carries what the crew wrote, and that
+        // mustn't be read as markup.
+        component Label: Text {
+            textFormat: Text.PlainText
+            color: app.theme.foreground
+            font.family: app.theme.font
+            font.pixelSize: app.theme.baseSize
+            elide: Text.ElideRight
+        }
+
+        Item {
+            id: surface
+            anchors.fill: parent
+
+            // The app's name, so the window is known at a glance.
+            Label {
+                id: appName
+                anchors { left: parent.left; right: nightButton.left; top: parent.top; margins: 14 }
+                text: "OMALOGBOOK"
+                color: app.theme.accent
+                font.bold: true
+                font.pixelSize: app.theme.baseSize - 1
+            }
+
+            // Night Watch for this window only: red on black.
+            Rectangle {
+                id: nightButton
+                anchors { right: parent.right; rightMargin: 14; verticalCenter: appName.verticalCenter }
+                height: 22
+                width: nightLabel.implicitWidth + 16
+                color: app.theme.night ? app.theme.accent : "transparent"
+                border.width: 1
+                border.color: app.theme.night ? app.theme.accent : Qt.alpha(app.theme.foreground, 0.25)
+                Label {
+                    id: nightLabel
+                    anchors.centerIn: parent
+                    text: "NIGHT  n"
+                    color: app.theme.night ? app.theme.background : app.theme.foreground
+                    font.pixelSize: app.theme.baseSize - 1
+                }
+                MouseArea { anchors.fill: parent; onClicked: app.theme.night = !app.theme.night }
+            }
+
+            Label {
+                id: title
+                anchors { left: parent.left; right: parent.right; top: appName.bottom; topMargin: 6; leftMargin: 14; rightMargin: 14 }
+                text: app.book.date === "" ? "" : app.book.date + (app.book.boat === "" ? "" : "  ·  " + app.book.boat)
+                font.pixelSize: app.theme.baseSize + 2
+                font.bold: true
+            }
+
+            Rectangle {
+                id: rule
+                anchors { left: parent.left; right: parent.right; top: title.bottom; topMargin: 10; leftMargin: 14; rightMargin: 14 }
+                height: 1
+                color: app.theme.foreground
+                opacity: 0.2
+            }
+
+            // A line to write in. It holds the focus whenever the window
+            // has it, so `n` for Night Watch would be a letter in a note:
+            // the palette key belongs to the button beside it, and Escape
+            // is how you leave.
+            Rectangle {
+                id: box
+                anchors { left: parent.left; right: parent.right; top: rule.bottom; topMargin: 12; leftMargin: 14; rightMargin: 14 }
+                height: app.theme.baseSize + 20
+                color: Qt.alpha(app.theme.foreground, field.activeFocus ? 0.08 : 0.05)
+                border.width: 1
+                border.color: field.activeFocus ? app.theme.accent : Qt.alpha(app.theme.foreground, 0.25)
+
+                TextInput {
+                    id: field
+                    anchors { fill: parent; leftMargin: 10; rightMargin: 10 }
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: app.theme.foreground
+                    font.family: app.theme.font
+                    font.pixelSize: app.theme.baseSize
+                    selectByMouse: true
+                    selectionColor: app.theme.accent
+                    selectedTextColor: app.theme.background
+                    // An entry is one line of a log, not an essay.
+                    maximumLength: 500
+                    enabled: !app.book.filing
+                    onAccepted: app.file()
+                    Keys.onEscapePressed: {
+                        if (text !== "") text = "";
+                        else app.dismiss();
+                    }
+
+                    Label {
+                        anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+                        visible: field.text === ""
+                        text: "a note, then Enter"
+                        color: Qt.alpha(app.theme.foreground, 0.45)
+                    }
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    cursorShape: Qt.IBeamCursor
+                }
+            }
+
+            // The day, oldest first, as a log reads.
+            Flickable {
+                id: page
+                anchors { left: parent.left; right: parent.right; top: box.bottom; bottom: statusBar.top; topMargin: 12 }
+                contentHeight: body.implicitHeight + 16
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                // A new entry arrives at the bottom; follow it there unless
+                // the crew has scrolled back to read.
+                onContentHeightChanged: if (atYEnd || contentHeight <= height) Qt.callLater(() => page.contentY = Math.max(0, contentHeight - height))
+
+                Column {
+                    id: body
+                    x: 14
+                    width: page.width - 28
+                    spacing: 8
+
+                    Label {
+                        width: parent.width
+                        visible: text !== ""
+                        text: app.emptyText
+                        color: app.book.error !== "" ? app.theme.red : Qt.alpha(app.theme.foreground, 0.65)
+                        wrapMode: Text.Wrap
+                        elide: Text.ElideNone
+                        maximumLineCount: 10
+                    }
+
+                    Repeater {
+                        model: app.book.entries
+                        Label {
+                            required property string modelData
+                            width: body.width
+                            text: app.plain(modelData)
+                            wrapMode: Text.Wrap
+                            elide: Text.ElideNone
+                            maximumLineCount: 6
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: toast
+                visible: app.toastText !== ""
+                anchors { left: parent.left; right: parent.right; bottom: statusBar.top; margins: 14 }
+                height: toastLabel.implicitHeight + 16
+                color: Qt.alpha(app.theme.background, 0.95)
+                border.width: 1
+                border.color: Qt.alpha(app.theme.foreground, 0.25)
+                Label {
+                    id: toastLabel
+                    anchors { fill: parent; margins: 8 }
+                    text: app.toastText
+                    wrapMode: Text.Wrap
+                    elide: Text.ElideRight
+                    maximumLineCount: 3
+                }
+            }
+
+            Rectangle {
+                id: statusBar
+                anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+                height: app.theme.baseSize + 16
+                color: app.theme.background
+                Rectangle { anchors { left: parent.left; right: parent.right; top: parent.top } height: 1; color: Qt.alpha(app.theme.foreground, 0.18) }
+                Label {
+                    anchors { left: parent.left; leftMargin: 14; verticalCenter: parent.verticalCenter }
+                    width: parent.width - 28
+                    text: app.totals !== "" ? app.totals : "Nothing under way"
+                    opacity: 0.65
+                }
+            }
+        }
+    }
+}

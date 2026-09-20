@@ -97,6 +97,32 @@ To keep the log going with the laptop closed, run it beside omakeel as a user
 service, or start it from your session. It writes nothing until omakeel has a
 position.
 
+## The window
+
+```sh
+./run.sh                         # from this checkout
+```
+
+A line to write in, the day's entries under it, and the day's run at the
+foot. The field holds the focus, so a note on watch is the words and Enter —
+nothing to find with a tiller under your arm. Escape clears the line, and
+clears the window when the line is already empty. `n`, or the button, is
+Night Watch: red on black, this window's own.
+
+It reads the day through `omalogbook today --json` and writes with
+`omalogbook note`, so the window needs no socket of its own and the position
+comes from the same place a note from any terminal gets one. The note on
+disk is watched, so an entry the running log writes — or one you type in an
+editor — shows without a refresh.
+
+In the Omarchy shell it is the plugin's panel (`manifest.json`, id
+`org.omahoy.logbook`); standalone it is its own Quickshell process. Either
+way it finds omalogbook next to the checkout, falling back to `omalogbook` on
+PATH; `OMALOGBOOK_BIN` names one directly.
+
+The window only shows the log. Keeping the watch — the hourly entries, the
+day's run, the GPX — is `omalogbook run`, and it is worth having both.
+
 ## In an editor
 
 The vault is an ordinary folder of markdown, so Obsidian opens it as a vault
