@@ -12,6 +12,8 @@ pub mod geo;
 pub mod git;
 pub mod keel;
 pub mod lock;
+pub mod preset;
 pub mod time;
 pub mod track;
 pub mod watch;
+pub mod wind;
