@@ -38,7 +38,17 @@ pub fn event(at: Local, utc: Local, text: &str) -> String {
     format!("- **{}**{} — {text}", at.clock(), utc_suffix(at, utc))
 }
 
-/// The crew's own entry, marked so it reads as theirs.
+/// The crew's own entry with the position it was written at:
+/// `- **14:32** (21:32 UTC) · 37°52.0′N 122°18.9′W — Dolphins off the port side`
+///
+/// Course and speed are left off, though the fix carries them. They are what
+/// the app writes in its own hourly lines, and a note that repeated them
+/// would read as machine output rather than as the crew's words.
+pub fn note_at(at: Local, utc: Local, lat: f64, lon: f64, text: &str) -> String {
+    fix(at, utc, lat, lon, None, None, text.trim())
+}
+
+/// The crew's own entry, when there is no position to put it at.
 pub fn note(at: Local, utc: Local, text: &str) -> String {
     format!(
         "- **{}**{} — {}",
@@ -62,6 +72,31 @@ mod tests {
     use crate::time;
 
     const NOON: i64 = 1_789_300_800; // 2026-09-13T12:00:00Z
+
+    /// The crew's words, where the boat was when they wrote them.
+    #[test]
+    fn a_note_carries_its_position_but_not_the_instruments() {
+        let at = time::local(NOON);
+        let line = note_at(
+            at,
+            time::utc(NOON),
+            37.8667,
+            -122.315,
+            "Dolphins off the port side",
+        );
+        assert!(line.contains("37°52.0′N"), "{line}");
+        assert!(line.contains("122°18.9′W"), "{line}");
+        assert!(line.ends_with("— Dolphins off the port side"), "{line}");
+        assert!(!line.contains(" kn"), "{line}");
+        // One separator: the clock, then the position. No course, no speed.
+        assert_eq!(line.matches('·').count(), 1, "{line}");
+    }
+
+    #[test]
+    fn a_note_without_a_fix_still_reads_as_the_crew_s() {
+        let at = time::local(NOON);
+        assert!(note(at, time::utc(NOON), "  Dolphins  ").ends_with("— Dolphins"));
+    }
 
     #[test]
     fn a_fix_reads_like_a_log_line() {

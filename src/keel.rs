@@ -3,7 +3,11 @@
 //! Omahoy app is.
 
 use serde_json::Value;
-use std::path::PathBuf;
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     net::UnixStream,
@@ -84,6 +88,34 @@ pub fn read(line: &str) -> Option<Update> {
         _ => None,
     };
     Some(Update::Fix(boat))
+}
+
+/// The boat's position right now, for a one-shot command like a note. The
+/// first message after a connection is a full `state`, so one line is
+/// usually enough; anything else on the socket is read past until `wait` runs
+/// out. A hub that is down, silent, or speaking another version gives no
+/// position at all, and the note is filed without one rather than held up.
+///
+/// Only a current fix counts. A stale one says where the boat was minutes
+/// ago, which would put the crew's words in the wrong place on the chart.
+pub fn once(socket: &Path, wait: Duration) -> Option<Fix> {
+    let stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    stream.set_read_timeout(Some(wait)).ok()?;
+    let deadline = Instant::now() + wait;
+    let mut reader = std::io::BufReader::new(stream.take(MAX_LINE));
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        match std::io::BufRead::read_line(&mut reader, &mut line) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => match read(line.trim_end()) {
+                Some(Update::Fix(fix)) => return fix.filter(|f| f.current),
+                Some(Update::Incompatible(_)) => return None,
+                _ => {}
+            },
+        }
+    }
+    None
 }
 
 /// Follow omakeel, reconnecting for as long as the log is running. The first
@@ -200,5 +232,65 @@ mod tests {
             panic!("no fix");
         };
         assert_eq!(fix.sog_kn, None);
+    }
+
+    /// A hub that says `lines`, then closes. Returns the socket's path.
+    fn hub(name: &str, lines: &[&str]) -> PathBuf {
+        use std::io::Write;
+        let dir =
+            std::env::temp_dir().join(format!("omalogbook-keel-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keel.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let said: Vec<String> = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                for line in said {
+                    if stream.write_all(line.as_bytes()).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        path
+    }
+
+    const WAIT: Duration = Duration::from_secs(2);
+
+    #[test]
+    fn one_shot_takes_the_position_from_the_first_state() {
+        let socket = hub("first", &[STATE]);
+        let fix = once(&socket, WAIT).expect("a fix");
+        assert_eq!(fix.lat, 37.864_711);
+        assert_eq!(fix.lon, -122.320_731_4);
+    }
+
+    #[test]
+    fn one_shot_reads_past_what_it_does_not_understand() {
+        let socket = hub("chatter", &["not json", r#"{"type":"hello","v":1}"#, STATE]);
+        assert!(once(&socket, WAIT).is_some());
+    }
+
+    /// A position from minutes ago would put the crew's words in the wrong
+    /// place, so a note is better off with none.
+    #[test]
+    fn one_shot_refuses_a_stale_fix() {
+        let stale = STATE.replace("\"status\":\"ok\"", "\"status\":\"stale\"");
+        let socket = hub("stale", &[&stale]);
+        assert_eq!(once(&socket, WAIT), None);
+    }
+
+    #[test]
+    fn one_shot_gives_up_on_a_hub_that_is_not_there() {
+        let missing = std::env::temp_dir().join("omalogbook-keel-nothing-here.sock");
+        let _ = std::fs::remove_file(&missing);
+        assert_eq!(once(&missing, Duration::from_millis(50)), None);
+    }
+
+    #[test]
+    fn one_shot_gives_up_on_a_hub_with_nothing_to_say() {
+        let socket = hub("silent", &[]);
+        assert_eq!(once(&socket, Duration::from_millis(50)), None);
     }
 }
