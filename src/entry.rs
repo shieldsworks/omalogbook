@@ -38,6 +38,68 @@ pub fn event(at: Local, utc: Local, text: &str) -> String {
     format!("- **{}**{} — {text}", at.clock(), utc_suffix(at, utc))
 }
 
+/// A mark: what the crew said happened, where, and what it was blowing.
+/// `- **14:32** (21:32 UTC) · 37°52.0′N 122°18.9′W · 245° · 5.1 kn — Departed
+///  · wind 13 kn from 262°, gusting 18 (HRRR) · 1014.5 hPa · measured 11 kn
+///  from 250° (Alameda, 12 min)`
+///
+/// Course and speed belong here, unlike on a note: a mark is an event in the
+/// day's run, and reads beside `under way` and `stopped`.
+pub fn mark(
+    at: Local,
+    utc: Local,
+    fix: Option<(f64, f64, Option<f64>, Option<f64>)>,
+    label: &str,
+    said: &str,
+    weather: &crate::wind::Weather,
+) -> String {
+    let mut what = label.to_string();
+    if !said.trim().is_empty() {
+        what.push_str(": ");
+        what.push_str(said.trim());
+    }
+    let mut line = match fix {
+        Some((lat, lon, sog, cog)) => self::fix(at, utc, lat, lon, sog, cog, &what),
+        None => event(at, utc, &what),
+    };
+    if let Some(f) = weather.forecast {
+        line.push_str(&format!(
+            " · wind {} (HRRR)",
+            blow(f.speed_kn, f.dir_deg, f.gust_kn)
+        ));
+        if let Some(hpa) = f.pressure_hpa {
+            line.push_str(&format!(" · {hpa:.1} hPa"));
+        }
+    }
+    if let Some(m) = &weather.measured {
+        line.push_str(&format!(
+            " · measured {} ({}{})",
+            blow(m.speed_kn, m.dir_deg, m.gust_kn),
+            m.name,
+            match m.age_minutes {
+                Some(mins) if mins > 0 => format!(", {mins} min"),
+                _ => String::new(),
+            }
+        ));
+    }
+    line
+}
+
+/// `13 kn from 262°, gusting 18`. A calm has no direction to give, and a
+/// gust is only worth saying when it is above the wind. The reading is
+/// named by its caller — `wind …` for the model, `measured …` for an
+/// anemometer — so the two can never be mistaken for each other.
+fn blow(speed_kn: f64, dir_deg: Option<f64>, gust_kn: Option<f64>) -> String {
+    let mut out = format!("{speed_kn:.0} kn");
+    if let Some(deg) = dir_deg {
+        out.push_str(&format!(" from {:03.0}°", deg));
+    }
+    if let Some(gust) = gust_kn.filter(|g| *g > speed_kn + 0.5) {
+        out.push_str(&format!(", gusting {gust:.0}"));
+    }
+    out
+}
+
 /// The crew's own entry with the position it was written at:
 /// `- **14:32** (21:32 UTC) · 37°52.0′N 122°18.9′W — Dolphins off the port side`
 ///
@@ -72,6 +134,88 @@ mod tests {
     use crate::time;
 
     const NOON: i64 = 1_789_300_800; // 2026-09-13T12:00:00Z
+
+    fn blowing() -> crate::wind::Weather {
+        crate::wind::Weather {
+            forecast: Some(crate::wind::Forecast {
+                speed_kn: 12.6,
+                dir_deg: Some(262.0),
+                gust_kn: Some(17.9),
+                pressure_hpa: Some(1014.6),
+            }),
+            measured: Some(crate::wind::Measured {
+                name: "Alameda".into(),
+                nm: 2.4,
+                age_minutes: Some(12),
+                speed_kn: 11.0,
+                dir_deg: Some(250.0),
+                gust_kn: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_mark_says_what_happened_where_and_what_it_was_blowing() {
+        let at = time::local(NOON);
+        let line = mark(
+            at,
+            time::utc(NOON),
+            Some((37.8667, -122.315, Some(5.1), Some(245.0))),
+            "Departed",
+            "",
+            &blowing(),
+        );
+        assert!(line.contains("— Departed ·"), "{line}");
+        assert!(line.contains("245°"), "{line}");
+        assert!(line.contains("5.1 kn"), "{line}");
+        assert!(
+            line.contains("wind 13 kn from 262°, gusting 18 (HRRR)"),
+            "{line}"
+        );
+        assert!(line.contains("1014.6 hPa"), "{line}");
+        assert!(
+            line.contains("measured 11 kn from 250° (Alameda, 12 min)"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn what_the_crew_added_follows_the_mark() {
+        let at = time::local(NOON);
+        let line = mark(
+            at,
+            time::utc(NOON),
+            Some((37.8667, -122.315, None, None)),
+            "Anchor down",
+            "  25 ft, 5:1 scope  ",
+            &Default::default(),
+        );
+        assert!(line.ends_with("— Anchor down: 25 ft, 5:1 scope"), "{line}");
+    }
+
+    /// No hub and no wind engine: the mark still says what happened, and
+    /// when.
+    #[test]
+    fn a_mark_with_nothing_running_is_still_a_mark() {
+        let at = time::local(NOON);
+        let line = mark(
+            at,
+            time::utc(NOON),
+            None,
+            "Berthed",
+            "",
+            &Default::default(),
+        );
+        assert!(line.ends_with("— Berthed"), "{line}");
+        assert!(!line.contains('·'), "{line}");
+    }
+
+    /// A gust at or below the wind is not a gust worth writing down.
+    #[test]
+    fn a_gust_is_only_said_when_it_is_one() {
+        assert_eq!(blow(12.0, Some(5.0), Some(12.2)), "12 kn from 005°");
+        assert_eq!(blow(12.0, None, Some(20.0)), "12 kn, gusting 20");
+    }
 
     /// The crew's words, where the boat was when they wrote them.
     #[test]

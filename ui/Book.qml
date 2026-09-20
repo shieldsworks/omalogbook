@@ -26,6 +26,9 @@ QtObject {
                 "omalogbook-ui", book.binary].concat(args);
     }
 
+    // The marks, read once: they only change when omalogbook does.
+    property var presets: []
+
     property string date: ""
     property string boat: ""
     property string path: ""
@@ -86,6 +89,22 @@ QtObject {
         book.read = true;
     }
 
+    property Process presetReader: Process {
+        command: book.run(["presets", "--json"])
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    var m = JSON.parse(text);
+                    if (m && m.v === book.version && Array.isArray(m.presets)) book.presets = m.presets;
+                } catch (e) {
+                    // An older omalogbook without `presets` costs the
+                    // completion list, nothing else: the words still file.
+                }
+            }
+        }
+    }
+
     property Process reader: Process {
         command: book.run(["today", "--json"])
         running: true
@@ -106,7 +125,7 @@ QtObject {
         onExited: code => {
             book.filing = false;
             if (code === 0) {
-                book.filed("");
+                book.filed(writerErr.text.trim());
                 book.refresh();
             } else {
                 book.refused(writerErr.text.trim() || ("omalogbook note exited " + code + "."));
