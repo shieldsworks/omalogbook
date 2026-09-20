@@ -315,7 +315,9 @@ Item {
                 z: 20
                 anchors { left: box.left; right: box.right; top: box.bottom; topMargin: 4 }
                 height: marksColumn.implicitHeight + 12
-                color: Qt.alpha(app.theme.background, 0.97)
+                // Opaque: the day showing through a list of marks is just
+                // two things to read at once.
+                color: app.theme.background
                 border.width: 1
                 border.color: Qt.alpha(app.theme.foreground, 0.25)
 
