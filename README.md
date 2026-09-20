@@ -50,8 +50,20 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
   every hour, and the day's run, fastest speed and time under way.
 - **Records the track.** Every passage becomes a GPX file, the format every
   chartplotter and mapping site already reads.
-- **Takes your own entries.** `omalogbook note "Reefed. Wind up to 22."` from
-  any terminal, on watch, without opening an editor.
+- **Takes your own entries, where you wrote them.** `omalogbook note "Dolphins
+  off the port side"` from any terminal, on watch, without opening an editor.
+  The entry carries the time and the boat's position:
+
+  ```markdown
+  - **14:32** (21:32 UTC) · 37°52.0′N 122°18.9′W — Dolphins off the port side
+  ```
+
+  Course and speed are left off, so a note reads as your words rather than as
+  another instrument line. With no hub or no fix the note is filed with its
+  time alone — the words are the point, and they are never held up waiting for
+  a position.
+- **Says where the day stands.** `omalogbook today` prints the day's entries
+  and totals; `omalogbook today --json` is the same for a window to read.
 - **Leaves your writing alone.** Your prose, your headings and any front matter
   you add are copied through untouched, and every save merges with what's on
   disk, so an entry you write while the log is running is never overwritten. A
@@ -65,6 +77,7 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
 ```sh
 cargo install --path .           # or: cargo build --release
 omalogbook run                   # follows omakeel, writes the log
+omalogbook today                 # the day so far
 ```
 
 Settings live in `~/.config/omalogbook/config.toml`. Every one is optional:

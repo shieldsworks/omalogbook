@@ -109,6 +109,11 @@ impl Day {
         Ok(day)
     }
 
+    /// The day's GPX tracks, vault-relative, in the order they were sailed.
+    pub fn tracks(&self) -> &[String] {
+        &self.tracks
+    }
+
     /// The note exists but isn't text, so omalogbook will not touch it.
     pub fn unreadable(&self) -> bool {
         !self.readable
