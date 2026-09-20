@@ -655,8 +655,17 @@ mod tests {
         let s = settings("stepped");
         let vault = s.vault.clone();
         let mut watch = Watch::new(s).unwrap();
+        // Anchored to midday rather than to whatever time the tests are run.
+        // This scenario steps an hour, and an hour after 23:30 is tomorrow —
+        // the day would move for an honest reason and the check below would
+        // read it as the log flipping.
+        let now = time::now();
+        let l = time::local(now);
+        let midday =
+            now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second)
+                + 12 * 3600;
         // The machine boots a week ahead, then is corrected.
-        let ahead = time::now() + 7 * 86_400;
+        let ahead = midday + 7 * 86_400;
         watch
             .update(fix(37.8663, -122.3148, 5.0, ahead), ahead)
             .unwrap();
