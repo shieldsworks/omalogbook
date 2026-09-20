@@ -75,6 +75,28 @@ Item {
         field.cursorPosition = field.text.length;
     }
 
+    // The entry being changed, or -1 for a new one. The line as it was read
+    // goes back with the change, so an entry the running log has shifted
+    // under us is refused rather than mistaken for another.
+    property int editing: -1
+    property string editingLine: ""
+
+    function edit(index) {
+        if (index < 0 || index >= app.book.entries.length) return;
+        app.editing = index;
+        app.editingLine = String(app.book.entries[index]);
+        var said = app.editingLine.indexOf(" — ");
+        field.text = said >= 0 ? app.editingLine.slice(said + 3) : "";
+        field.cursorPosition = field.text.length;
+        field.forceActiveFocus();
+    }
+
+    function cancel() {
+        app.editing = -1;
+        app.editingLine = "";
+        field.text = "";
+    }
+
     function file() {
         var words = field.text.trim();
         if (words === "") return;
@@ -82,7 +104,22 @@ Item {
             app.toast("Still filing the last one.");
             return;
         }
+        if (app.editing >= 0) {
+            if (app.book.amend(app.editing, app.editingLine, words)) app.cancel();
+            return;
+        }
         if (app.book.note(words)) field.text = "";
+    }
+
+    function strikeEditing() {
+        if (app.editing < 0 || app.book.filing) return;
+        if (app.book.strike(app.editing, app.editingLine)) app.cancel();
+    }
+
+    // A struck entry keeps its line through it here too, rather than showing
+    // the tildes the file uses to say so.
+    function struck(line) {
+        return String(line).indexOf("~~") >= 0;
     }
 
     // The day as a line: `12.4 nm · fastest 6.1 kn · under way 3 h 12 min`.
@@ -104,7 +141,7 @@ Item {
     // An entry without its markdown: `- **09:15** (16:15 UTC) · …` is for
     // the file, not for a window.
     function plain(line) {
-        return String(line).replace(/^-\s+/, "").replace(/\*\*/g, "");
+        return String(line).replace(/^-\s+/, "").replace(/\*\*/g, "").replace(/~~/g, "");
     }
 
     // For checks, where no keyboard can be driven:
@@ -124,6 +161,11 @@ Item {
             field.cursorPosition = field.text.length;
         }
         function complete(): void { app.complete(); }
+        function file(): void { app.file(); }
+        function edit(index: int): void { app.edit(index); }
+        function cancel(): void { app.cancel(); }
+        function strike(): void { app.strikeEditing(); }
+        function editingAt(): int { return app.editing; }
         function marks(): string { return JSON.stringify(app.matches.map(m => m.word)); }
         function refresh(): void { app.book.refresh(); }
     }
@@ -204,8 +246,27 @@ Item {
             // the palette key belongs to the button beside it, and Escape
             // is how you leave.
             Rectangle {
+                id: strikeButton
+                visible: app.editing >= 0
+                anchors { right: parent.right; rightMargin: 14; verticalCenter: box.verticalCenter }
+                height: box.height
+                width: strikeLabel.implicitWidth + 20
+                color: "transparent"
+                border.width: 1
+                border.color: Qt.alpha(app.theme.red, 0.6)
+                Label {
+                    id: strikeLabel
+                    anchors.centerIn: parent
+                    text: "STRIKE"
+                    color: app.theme.red
+                    font.pixelSize: app.theme.baseSize - 1
+                }
+                MouseArea { anchors.fill: parent; onClicked: app.strikeEditing() }
+            }
+
+            Rectangle {
                 id: box
-                anchors { left: parent.left; right: parent.right; top: rule.bottom; topMargin: 12; leftMargin: 14; rightMargin: 14 }
+                anchors { left: parent.left; right: app.editing >= 0 ? strikeButton.left : parent.right; top: rule.bottom; topMargin: 12; leftMargin: 14; rightMargin: app.editing >= 0 ? 8 : 14 }
                 height: app.theme.baseSize + 20
                 color: Qt.alpha(app.theme.foreground, field.activeFocus ? 0.08 : 0.05)
                 border.width: 1
@@ -227,14 +288,15 @@ Item {
                     onAccepted: app.file()
                     Keys.onTabPressed: app.complete()
                     Keys.onEscapePressed: {
-                        if (text !== "") text = "";
+                        if (app.editing >= 0) app.cancel();
+                        else if (text !== "") text = "";
                         else app.dismiss();
                     }
 
                     Label {
                         anchors { left: parent.left; verticalCenter: parent.verticalCenter }
                         visible: field.text === ""
-                        text: "a note, then Enter"
+                        text: app.editing >= 0 ? "the words, then Enter" : "a note, then Enter"
                         color: Qt.alpha(app.theme.foreground, 0.45)
                     }
                 }
@@ -328,13 +390,37 @@ Item {
 
                     Repeater {
                         model: app.book.entries
-                        Label {
+                        Item {
                             required property string modelData
+                            required property int index
                             width: body.width
-                            text: app.plain(modelData)
-                            wrapMode: Text.Wrap
-                            elide: Text.ElideNone
-                            maximumLineCount: 6
+                            height: entryLabel.implicitHeight + 8
+
+                            Rectangle {
+                                anchors.fill: parent
+                                anchors.margins: -4
+                                visible: app.editing === index
+                                color: Qt.alpha(app.theme.accent, 0.12)
+                                border.width: 1
+                                border.color: Qt.alpha(app.theme.accent, 0.5)
+                            }
+                            Label {
+                                id: entryLabel
+                                anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
+                                text: app.plain(modelData)
+                                // Struck through here as it is in the file:
+                                // it happened, and it was withdrawn.
+                                font.strikeout: app.struck(modelData)
+                                color: app.struck(modelData) ? Qt.alpha(app.theme.foreground, 0.5) : app.theme.foreground
+                                wrapMode: Text.Wrap
+                                elide: Text.ElideNone
+                                maximumLineCount: 6
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: app.editing === index ? app.cancel() : app.edit(index)
+                            }
                         }
                     }
                 }

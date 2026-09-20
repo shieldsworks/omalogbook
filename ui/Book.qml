@@ -65,6 +65,25 @@ QtObject {
         return true;
     }
 
+    // Change an entry the window is showing. `expect` is the line as it was
+    // read: if the running log has written since, omalogbook refuses rather
+    // than change the wrong one, and the window rereads.
+    function amend(index, expect, words) {
+        if (filing) return false;
+        filing = true;
+        writer.command = run(["amend", String(index + 1), "--expect", expect, String(words)]);
+        writer.running = true;
+        return true;
+    }
+
+    function strike(index, expect) {
+        if (filing) return false;
+        filing = true;
+        writer.command = run(["strike", String(index + 1), "--expect", expect]);
+        writer.running = true;
+        return true;
+    }
+
     function take(text) {
         var m;
         try {

@@ -6,6 +6,8 @@ omalogbook — the ship's log for Omahoy
 
 usage: omalogbook run [--vault DIR] [--socket PATH] [--no-git]
        omalogbook note TEXT...
+       omalogbook amend N TEXT... [--date D] [--expect LINE]
+       omalogbook strike N [--erase] [--date D] [--expect LINE]
        omalogbook presets [--json]
        omalogbook today [--json] [--date YYYY-MM-DD]
        omalogbook path [--date YYYY-MM-DD]
@@ -17,6 +19,8 @@ run     follow omakeel and write the log: entries, the day's run, and a GPX
 note    add your own entry to today's note, at the boat's position when
         omakeel has one. A line that opens with a mark — /depart, /anchor,
         /reef and the rest — also carries what it was blowing
+amend   change the words of entry N, keeping its clock and its fix
+strike  rule a line through entry N, or --erase to take it out
 presets list the marks
 today   print a day's entries and its totals, or --json for a window to read
 path    print the path of a day's note, for an editor to open
@@ -51,6 +55,8 @@ fn main() -> ExitCode {
         Some((&"note", rest)) => note(rest),
         Some((&"today", rest)) => today(rest),
         Some((&"presets", rest)) => presets(rest),
+        Some((&"amend", rest)) => amend(rest),
+        Some((&"strike", rest)) => strike(rest),
         Some((&"path", rest)) => path(rest),
         Some((&"vault", _)) => {
             println!("{}", settings(&[]).0.vault.display());
@@ -262,8 +268,11 @@ fn today(args: &[&str]) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     println!("{date} · {}", settings.boat);
-    for line in &entries {
-        println!("{line}");
+    // Numbered, because `amend` and `strike` ask which one. Counted from 1:
+    // the crew reads a log, not an array.
+    let width = entries.len().to_string().len();
+    for (n, line) in entries.iter().enumerate() {
+        println!("{:>width$}. {line}", n + 1);
     }
     if !entries.is_empty() {
         println!(
@@ -274,6 +283,115 @@ fn today(args: &[&str]) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+/// `N`, and the flags an entry-changing command shares: which day, and the
+/// entry as the caller last saw it. What's left is the words.
+struct Which {
+    index: usize,
+    date: String,
+    expect: String,
+    erase: bool,
+    words: String,
+}
+
+fn which(args: &[&str]) -> Result<Which, String> {
+    let mut w = Which {
+        index: 0,
+        date: day::today(),
+        expect: String::new(),
+        erase: false,
+        words: String::new(),
+    };
+    let mut rest: Vec<&str> = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match *arg {
+            "--date" => {
+                let Some(value) = it.next() else { continue };
+                if !time::valid_date(value) {
+                    return Err("--date wants a day like 2026-09-18".into());
+                }
+                w.date = value.to_string();
+            }
+            "--expect" => w.expect = it.next().map(|s| s.to_string()).unwrap_or_default(),
+            "--erase" => w.erase = true,
+            other => rest.push(other),
+        }
+    }
+    let Some((first, words)) = rest.split_first() else {
+        return Err("which entry? `omalogbook today` numbers them".into());
+    };
+    // Entries are counted as `today` prints them, from 1: the crew reads a
+    // log, not an array.
+    match first.parse::<usize>() {
+        Ok(n) if n >= 1 => w.index = n - 1,
+        _ => return Err(format!("{first} isn't an entry number")),
+    }
+    w.words = words.join(" ");
+    Ok(w)
+}
+
+fn revise(args: &[&str], how: impl Fn(&Which) -> day::Revision) -> ExitCode {
+    let w = match which(args) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!(
+                "omalogbook: {e}
+
+{USAGE}"
+            );
+            return ExitCode::from(64);
+        }
+    };
+    let (settings, _) = settings(&[]);
+    let how = how(&w);
+    let done = || -> std::io::Result<(String, PathBuf)> {
+        let _lock = lock::Lock::take(&settings.vault)?;
+        let mut day = day::Day::open(&settings.vault, &w.date, &settings.boat)?;
+        let line = day.revise(w.index, &w.expect, &how)?;
+        Ok((line, day.path.clone()))
+    };
+    match done() {
+        Ok((line, path)) => {
+            if line.is_empty() {
+                println!("{}", path.display());
+            } else {
+                println!("{line}");
+            }
+            if settings.git {
+                let what = match how {
+                    day::Revision::Amend(_) => "an entry amended",
+                    day::Revision::Strike => "an entry struck",
+                    day::Revision::Erase => "an entry erased",
+                };
+                match omalogbook::git::commit(&settings.vault, &format!("log: {} · {what}", w.date))
+                {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("omalogbook: could not commit ({e}); the log is on disk"),
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("omalogbook: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn amend(args: &[&str]) -> ExitCode {
+    revise(args, |w| day::Revision::Amend(w.words.clone()))
+}
+
+fn strike(args: &[&str]) -> ExitCode {
+    revise(args, |w| {
+        if w.erase {
+            day::Revision::Erase
+        } else {
+            day::Revision::Strike
+        }
+    })
 }
 
 /// The marks, for the crew or for the window's completion list.

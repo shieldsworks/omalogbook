@@ -90,6 +90,36 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
   Losing what someone wrote on watch would be worse than filing it plainly.
 - **Says where the day stands.** `omalogbook today` prints the day's entries
   and totals; `omalogbook today --json` is the same for a window to read.
+- **Lets you put an entry right.** `omalogbook today` numbers the day's
+  entries; `amend` changes the words of one and `strike` rules a line
+  through it:
+
+  ```sh
+  omalogbook today
+  omalogbook amend 1 "Dolphins off the port side"
+  omalogbook strike 3                 # ~~ruled through, still there~~
+  omalogbook strike 3 --erase         # gone altogether
+  ```
+
+  Striking is the default because that is what a paper log does: the entry
+  happened and was withdrawn, which is worth more reading back than a line
+  that was quietly never there. `--erase` is for when you truly mean it.
+
+  The clock and the fix are never rewritten. A log is a record of where the
+  boat was and when, and omalogbook will not put different numbers there —
+  amending replaces the words. The file is yours if you mean to change the
+  rest, but then you are editing the record by hand, which is as it should
+  be.
+
+  `--expect` carries the entry as you last saw it, so a change aimed at
+  entry 3 can't land on another one that the running log has since pushed
+  down. The window passes it for you.
+
+  You can amend or strike any entry in the block, the automatic position
+  lines included. Worth knowing: the day's run, fastest speed and time under
+  way come from the track rather than from those lines, so striking one does
+  not change the totals, and the entries and the numbers can disagree. That
+  is your call to make, not omalogbook's to prevent.
 - **Leaves your writing alone.** Your prose, your headings and any front matter
   you add are copied through untouched, and every save merges with what's on
   disk, so an entry you write while the log is running is never overwritten. A
@@ -105,6 +135,8 @@ cargo install --path .           # or: cargo build --release
 omalogbook run                   # follows omakeel, writes the log
 omalogbook today                 # the day so far
 omalogbook presets               # the marks
+omalogbook amend 1 "..."         # change an entry's words
+omalogbook strike 3              # rule a line through one
 ```
 
 Settings live in `~/.config/omalogbook/config.toml`. Every one is optional:
@@ -135,7 +167,9 @@ foot. The field holds the focus, so a note on watch is the words and Enter —
 nothing to find with a tiller under your arm. Escape clears the line, and
 clears the window when the line is already empty. `n`, or the button, is
 Night Watch: red on black, this window's own. A line that opens with `/`
-lists the marks it could become, and Tab takes the first.
+lists the marks it could become, and Tab takes the first. Click an entry to
+change it: its words come up in the line for editing, STRIKE rules through
+it, and Escape leaves it alone. A struck entry shows struck.
 
 It reads the day through `omalogbook today --json` and writes with
 `omalogbook note`, so the window needs no socket of its own and the position

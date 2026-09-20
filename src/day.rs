@@ -206,6 +206,67 @@ impl Day {
         Ok(())
     }
 
+    /// Change one entry of the day as it stands on disk.
+    ///
+    /// The clock and the fix are never rewritten. A log is a record of where
+    /// the boat was and when, and omalogbook will not put different numbers
+    /// there — amending replaces the words, and the file is yours to edit by
+    /// hand if you truly mean to change the rest.
+    pub fn revise(&mut self, index: usize, expect: &str, how: &Revision) -> io::Result<String> {
+        let existing = match read(&self.path) {
+            Ok(Some(text)) => text,
+            Ok(None) => return Err(io::Error::other(format!("no log for {}", self.date))),
+            Err(Unreadable) => {
+                self.readable = false;
+                return Err(self.left_alone());
+            }
+        };
+        let mut entries = entries_in(&existing);
+        let Some(line) = entries.get(index).cloned() else {
+            return Err(io::Error::other(format!(
+                "the log for {} has {} entries",
+                self.date,
+                entries.len()
+            )));
+        };
+        // The day may have moved on since the caller read it: the running log
+        // writes an entry an hour, and every one of them shifts what `index`
+        // means. Change the entry the caller meant or change nothing.
+        if !expect.is_empty() && collapse(expect) != collapse(&line) {
+            return Err(io::Error::other(
+                "that entry has changed since you read it; look again".to_string(),
+            ));
+        }
+        let changed = match how {
+            Revision::Amend(words) => amend(&line, words),
+            Revision::Strike => {
+                if struck(&line) {
+                    return Err(io::Error::other("that entry is already struck".to_string()));
+                }
+                strike(&line)
+            }
+            Revision::Erase => String::new(),
+        };
+        match how {
+            Revision::Erase => {
+                entries.remove(index);
+            }
+            _ => entries[index] = changed.clone(),
+        }
+        self.merge_totals(&existing);
+        let text = self.render(&existing, &entries);
+        let temp = self.path.with_extension("md.tmp");
+        {
+            let mut file = fs::File::create(&temp)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+        }
+        fs::rename(&temp, &self.path)?;
+        self.had_entries = !entries.is_empty();
+        self.remember();
+        Ok(changed)
+    }
+
     /// Note the totals as the file now has them, rounded as they are written,
     /// so reading them back matches to the bit.
     fn remember(&mut self) {
@@ -318,6 +379,58 @@ impl Day {
         }
         out.push_str(&format!("\n{END}"));
         out
+    }
+}
+
+/// What to do to an entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Revision {
+    /// Replace the words, keeping the clock and the fix as they were.
+    Amend(String),
+    /// Rule a line through it. It happened, and it was withdrawn — which is
+    /// what a paper log does, and worth more later than a line that was
+    /// quietly never there.
+    Strike,
+    /// Take it out altogether.
+    Erase,
+}
+
+/// Whitespace-insensitive, so a line that only got re-wrapped still matches.
+fn collapse(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Everything after the clock: what a strike rules through, and what the
+/// entry actually says. `- **14:32** (21:32 UTC) · 37°…` splits after the
+/// bold clock, so the time an entry was made always stays legible.
+fn body_of(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix("- **")?;
+    let close = rest.find("**")?;
+    Some(line.split_at(4 + close + 2))
+}
+
+fn struck(line: &str) -> bool {
+    body_of(line).is_some_and(|(_, body)| body.trim_start().starts_with("~~"))
+}
+
+fn strike(line: &str) -> String {
+    match body_of(line) {
+        Some((clock, body)) if !body.trim().is_empty() => {
+            format!("{clock} ~~{}~~", body.trim())
+        }
+        _ => format!("~~{}~~", line.trim_start_matches("- ")),
+    }
+}
+
+/// The crew's words are what follows the em dash. An entry that has none —
+/// a bare position line — gains them.
+fn amend(line: &str, words: &str) -> String {
+    let words = words.trim();
+    match line.find(" — ") {
+        Some(at) if !words.is_empty() => format!("{}{words}", &line[..at + " — ".len()]),
+        Some(at) => line[..at].trim_end().to_string(),
+        None if !words.is_empty() => format!("{} — {words}", line.trim_end()),
+        None => line.to_string(),
     }
 }
 
@@ -762,6 +875,119 @@ mod tests {
             let path = path_for(dir, bad);
             assert_eq!(path.parent(), Some(dir), "{bad} -> {path:?}");
         }
+    }
+
+    /// A day with two entries: a machine one and the crew's own.
+    fn written(name: &str) -> PathBuf {
+        let dir = tempdir(name);
+        let mut d = day(&dir);
+        d.push(
+            "- **14:32** (21:32 UTC) · 37°52.0′N 122°18.9′W — Dolphins off teh port side".into(),
+        );
+        d.save().unwrap();
+        dir
+    }
+
+    #[test]
+    fn amending_changes_the_words_and_nothing_else() {
+        let dir = written("amend");
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        let line = d
+            .revise(1, "", &Revision::Amend("Dolphins off the port side".into()))
+            .unwrap();
+        assert_eq!(
+            line,
+            "- **14:32** (21:32 UTC) · 37°52.0′N 122°18.9′W — Dolphins off the port side"
+        );
+        let text = note(&dir);
+        assert!(text.contains("— Dolphins off the port side"), "{text}");
+        assert!(!text.contains("teh"), "{text}");
+        // The day's numbers are untouched by a change to its words.
+        assert!(text.contains("distance_nm: 12.4"), "{text}");
+    }
+
+    /// A bare position line has no words yet; amending gives it some.
+    #[test]
+    fn amending_a_line_with_no_words_adds_them() {
+        let dir = written("addwords");
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        let line = d
+            .revise(0, "", &Revision::Amend("Slipped the lines".into()))
+            .unwrap();
+        assert!(line.ends_with("· under way — Slipped the lines"), "{line}");
+    }
+
+    #[test]
+    fn striking_rules_a_line_through_but_keeps_the_clock() {
+        let dir = written("strike");
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        let line = d.revise(1, "", &Revision::Strike).unwrap();
+        assert_eq!(
+            line,
+            "- **14:32** ~~(21:32 UTC) · 37°52.0′N 122°18.9′W — Dolphins off teh port side~~"
+        );
+        assert!(note(&dir).contains("~~"), "{}", note(&dir));
+    }
+
+    #[test]
+    fn a_struck_entry_is_not_struck_twice() {
+        let dir = written("twice");
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        d.revise(1, "", &Revision::Strike).unwrap();
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        assert!(d.revise(1, "", &Revision::Strike).is_err());
+    }
+
+    #[test]
+    fn erasing_takes_the_line_out() {
+        let dir = written("erase");
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        d.revise(1, "", &Revision::Erase).unwrap();
+        let text = note(&dir);
+        assert!(!text.contains("Dolphins"), "{text}");
+        assert_eq!(text.matches("- **").count(), 1, "{text}");
+    }
+
+    /// The running log writes an entry an hour, and every one shifts what an
+    /// index means. Change the entry the caller meant or change nothing.
+    #[test]
+    fn an_entry_that_moved_since_it_was_read_is_not_the_one_changed() {
+        let dir = written("moved");
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        let err = d
+            .revise(1, "- **14:32** something else entirely", &Revision::Erase)
+            .unwrap_err();
+        assert!(err.to_string().contains("changed since"), "{err}");
+        assert!(note(&dir).contains("Dolphins"), "the entry went anyway");
+    }
+
+    #[test]
+    fn the_entry_the_caller_meant_is_matched_past_rewrapping() {
+        let dir = written("expect");
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        let spaced =
+            "-  **14:32**  (21:32 UTC) · 37°52.0′N 122°18.9′W  — Dolphins off teh port side";
+        assert!(d.revise(1, spaced, &Revision::Strike).is_ok());
+    }
+
+    #[test]
+    fn an_entry_that_is_not_there_is_refused() {
+        let dir = written("range");
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        let err = d.revise(9, "", &Revision::Strike).unwrap_err();
+        assert!(err.to_string().contains("2 entries"), "{err}");
+    }
+
+    #[test]
+    fn a_note_that_is_not_text_is_never_revised() {
+        let dir = tempdir("binary-revise");
+        let path = path_for(&dir, "2026-09-18");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let junk = b"log \xff\xfe not text".to_vec();
+        fs::write(&path, &junk).unwrap();
+        let mut d = Day::open(&dir, "2026-09-18", "Dash").unwrap();
+        assert!(d.revise(0, "", &Revision::Erase).is_err());
+        assert_eq!(fs::read(&path).unwrap(), junk, "the file was rewritten");
     }
 
     fn tempdir(name: &str) -> PathBuf {
