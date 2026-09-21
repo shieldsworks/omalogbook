@@ -8,9 +8,18 @@
   "homepage": "https://omahoy.org",
   "description": "The ship's log: notes at the boat's position, in plain markdown and GPX",
   "kinds": [
+    "bar-widget",
     "panel"
   ],
   "entryPoints": {
+    "barWidget": "ui/LogbookBar.qml",
     "panel": "ui/Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Omalogbook",
+    "description": "Every mile sailed, the time under way, and the days worth remembering",
+    "category": "Navigation",
+    "allowMultiple": false,
+    "defaultSection": "right"
   }
 }

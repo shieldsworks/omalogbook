@@ -14,6 +14,7 @@ pub mod keel;
 pub mod lock;
 pub mod preset;
 pub mod time;
+pub mod totals;
 pub mod track;
 pub mod watch;
 pub mod wind;

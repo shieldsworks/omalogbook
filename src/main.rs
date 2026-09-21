@@ -1,4 +1,4 @@
-use omalogbook::{config, day, entry, keel, lock, preset, time, watch::Watch, wind};
+use omalogbook::{config, day, entry, keel, lock, preset, time, totals, watch::Watch, wind};
 use std::{path::PathBuf, process::ExitCode};
 
 const USAGE: &str = "\
@@ -10,6 +10,7 @@ usage: omalogbook run [--vault DIR] [--socket PATH] [--no-git]
        omalogbook strike N [--erase] [--date D] [--expect LINE]
        omalogbook presets [--json]
        omalogbook today [--json] [--date YYYY-MM-DD]
+       omalogbook totals [--json] [--vault DIR]
        omalogbook path [--date YYYY-MM-DD]
        omalogbook vault
        omalogbook --help | --version
@@ -23,6 +24,8 @@ amend   change the words of entry N, keeping its clock and its fix
 strike  rule a line through entry N, or --erase to take it out
 presets list the marks
 today   print a day's entries and its totals, or --json for a window to read
+totals  add up every day in the log: distance, time under way, average
+        speed, and the records
 path    print the path of a day's note, for an editor to open
 vault   print the folder the log lives in
 
@@ -54,6 +57,7 @@ fn main() -> ExitCode {
         Some((&"run", rest)) => run(rest),
         Some((&"note", rest)) => note(rest),
         Some((&"today", rest)) => today(rest),
+        Some((&"totals", rest)) => lifetime(rest),
         Some((&"presets", rest)) => presets(rest),
         Some((&"amend", rest)) => amend(rest),
         Some((&"strike", rest)) => strike(rest),
@@ -395,6 +399,140 @@ fn strike(args: &[&str]) -> ExitCode {
 }
 
 /// The marks, for the crew or for the window's completion list.
+/// Every day in the log, added up. Named `lifetime` here because `totals` is
+/// the module that does the adding.
+fn lifetime(args: &[&str]) -> ExitCode {
+    let (settings, _) = settings(args);
+    let now = time::local(time::now());
+    let sums = totals::read(&settings.vault, now.year);
+    let all = &sums.all;
+    if args.contains(&"--json") {
+        let best = |b: &totals::Best| {
+            serde_json::json!({
+                "value": if b.known() { Some(b.value) } else { None },
+                "date": b.date,
+            })
+        };
+        let run = |r: &totals::Run| {
+            serde_json::json!({
+                "days": r.days,
+                "daysSailed": r.days_sailed,
+                "distanceNm": r.distance_nm,
+                "underwaySecs": r.underway_secs,
+                "passages": r.passages,
+                "averageKn": r.average_kn(),
+            })
+        };
+        let mut longest = best(&sums.longest);
+        longest["secs"] = serde_json::json!(sums.longest_secs);
+        println!(
+            "{}",
+            serde_json::json!({
+                "v": 1,
+                "boat": settings.boat,
+                "vault": settings.vault.to_string_lossy(),
+                // The day's note, for a window that wants to know when the
+                // totals have moved without rereading the whole vault.
+                "todayPath": day::path_for(&settings.vault, &day::today()).to_string_lossy(),
+                "all": run(all),
+                "year": run(&sums.year),
+                "thisYear": sums.this_year,
+                "fastest": best(&sums.fastest),
+                "bestDay": best(&sums.best_day),
+                "longestDay": longest,
+                "today": sums.today.as_ref().map(|d| serde_json::json!({
+                    "date": d.date,
+                    "distanceNm": d.distance_nm,
+                    "maxSogKn": d.max_sog_kn,
+                    "underwaySecs": d.underway_secs,
+                    "passages": d.passages,
+                })),
+                "first": sums.first,
+                "last": sums.last,
+                "spanDays": sums.span_days(),
+            })
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    if all.days == 0 {
+        println!("{} · nothing logged yet", settings.boat);
+        return ExitCode::SUCCESS;
+    }
+    let heading = match (sums.first.is_empty(), sums.span_days()) {
+        (false, Some(span)) => format!(
+            "{} · {} to {} · {} {} sailed of {span}",
+            settings.boat,
+            sums.first,
+            sums.last,
+            all.days_sailed,
+            if all.days_sailed == 1 { "day" } else { "days" },
+        ),
+        // Notes, but nothing sailed yet: the log has been opened, no more.
+        _ => format!(
+            "{} · {} days logged, none sailed yet",
+            settings.boat, all.days
+        ),
+    };
+    println!("{heading}\n");
+    let row = |label: &str, value: String| println!("  {label:<13}{value}");
+    row("Distance", format!("{:.1} nm", all.distance_nm));
+    row("Under way", day::hours(all.underway_secs));
+    if let Some(kn) = all.average_kn() {
+        row("Average", format!("{kn:.1} kn under way"));
+    }
+    if sums.fastest.known() {
+        row(
+            "Fastest",
+            format!("{:.1} kn on {}", sums.fastest.value, sums.fastest.date),
+        );
+    }
+    row("Passages", all.passages.to_string());
+    if sums.best_day.known() || sums.longest.known() {
+        println!();
+    }
+    if sums.best_day.known() {
+        row(
+            "Biggest day",
+            format!("{:.1} nm on {}", sums.best_day.value, sums.best_day.date),
+        );
+    }
+    if sums.longest.known() {
+        row(
+            "Longest day",
+            format!("{} on {}", day::hours(sums.longest_secs), sums.longest.date),
+        );
+    }
+    // Today, while it is still happening. A day that hasn't gone anywhere
+    // yet says nothing: the boat is alongside, which the crew can see.
+    if let Some(today) = sums.today.as_ref().filter(|d| d.sailed()) {
+        println!();
+        row(
+            "Today",
+            format!(
+                "{:.1} nm in {}",
+                today.distance_nm,
+                day::hours(today.underway_secs)
+            ),
+        );
+    }
+
+    // The season so far, which is only worth a line once there is more log
+    // than this year.
+    if sums.year.days > 0 && sums.year.days < all.days {
+        println!();
+        row(
+            &format!("{}", sums.this_year),
+            format!(
+                "{:.1} nm in {}",
+                sums.year.distance_nm,
+                day::hours(sums.year.underway_secs)
+            ),
+        );
+    }
+    ExitCode::SUCCESS
+}
+
 fn presets(args: &[&str]) -> ExitCode {
     if args.contains(&"--json") {
         println!(

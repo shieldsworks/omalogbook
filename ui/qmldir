@@ -1,3 +1,6 @@
+singleton Totals 1.0 Totals.qml
+LogbookBar 1.0 LogbookBar.qml
+Ledger 1.0 Ledger.qml
 LogbookWindow 1.0 LogbookWindow.qml
 Book 1.0 Book.qml
 Panel 1.0 Panel.qml

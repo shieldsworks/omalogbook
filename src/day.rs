@@ -517,7 +517,7 @@ fn split_front(text: &str) -> (Vec<String>, &str) {
 }
 
 /// `key: value` pairs from the front matter, for the keys omalogbook owns.
-fn front_pairs(text: &str) -> Vec<(String, String)> {
+pub(crate) fn front_pairs(text: &str) -> Vec<(String, String)> {
     split_front(text)
         .0
         .iter()

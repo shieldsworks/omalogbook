@@ -50,6 +50,10 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
   every hour, and the day's run, fastest speed and time under way.
 - **Records the track.** Every passage becomes a GPX file, the format every
   chartplotter and mapping site already reads.
+- **Adds it all up.** `omalogbook totals` reads every note in the vault and
+  says how far the boat has sailed, how long it has been under way, and what
+  speed that makes — with the records worth keeping. In the Omarchy bar it is
+  a widget that opens onto the same figures.
 - **Takes your own entries, where you wrote them.** `omalogbook note "Dolphins
   off the port side"` from any terminal, on watch, without opening an editor.
   The entry carries the time and the boat's position:
@@ -185,6 +189,55 @@ PATH; `OMALOGBOOK_BIN` names one directly.
 The window only shows the log. Keeping the watch — the hourly entries, the
 day's run, the GPX — is `omalogbook run`, and it is worth having both.
 
+## The totals
+
+```sh
+omalogbook totals
+```
+
+```
+Dash · 2025-11-02 to 2026-09-21 · 6 days sailed of 324
+
+  Distance     134.4 nm
+  Under way    29 h 36 min
+  Average      4.5 kn under way
+  Fastest      8.4 kn on 2026-05-30
+  Passages     7
+
+  Biggest day  48.9 nm on 2026-05-30
+  Longest day  11 h 12 min on 2026-05-30
+
+  Today        7.5 nm in 2 h 06 min
+
+  2026         120.2 nm in 26 h 30 min
+```
+
+Every figure is added up from the notes themselves, each time, and nothing is
+cached anywhere to disagree with them. A total you corrected by hand is the
+total counted: the note is the record, and this only reads it. Days the boat
+stayed alongside are logged but not sailed, and the average is over the time
+actually under way rather than over the days, so a week at anchor doesn't
+read as a week of slow sailing.
+
+`--json` is the same numbers for a window to read, and `--vault DIR` totals a
+log somewhere else.
+
+### In the bar
+
+The Omarchy shell shows it as `LOG 134.4 nm`, and `LOG 134.4 nm · +7.5` once
+the day has a run of its own. Click for the rest. The widget reads the vault
+when it is opened, when today's note changes — which is the running log
+writing an entry — and every few minutes besides.
+
+```sh
+scripts/link-plugin.sh                               # link and enable
+omarchy bar put org.omahoy.logbook --after omarchy.tray
+```
+
+A widget already in `plugins` rather than in the bar's layout is taken as
+placed, so a logbook that used to be panel-only wants its `plugins` entry
+removed before `omarchy bar put` will put it anywhere.
+
 ## In an editor
 
 The vault is an ordinary folder of markdown, so Obsidian opens it as a vault
@@ -219,6 +272,9 @@ Keep your own vault private, and think before you publish a track.
 
 ## What it doesn't do yet
 
+- Totals by season, passage or crew. The figures are per day and for the whole
+  log; a passage's own run is in its GPX, and the rest waits until there is
+  enough log to want them.
 - Routes, which [omahelm](https://github.com/shieldsworks/omahelm) does not have
   yet. Tracks are recorded now; routes will be logged once there are any.
 - Weather beyond wind and pressure. A mark carries both, from omawind; air
