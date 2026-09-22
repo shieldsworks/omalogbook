@@ -398,7 +398,6 @@ fn strike(args: &[&str]) -> ExitCode {
     })
 }
 
-/// The marks, for the crew or for the window's completion list.
 /// Every day in the log, added up. Named `lifetime` here because `totals` is
 /// the module that does the adding.
 fn lifetime(args: &[&str]) -> ExitCode {
@@ -533,6 +532,7 @@ fn lifetime(args: &[&str]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The marks, for the crew or for the window's completion list.
 fn presets(args: &[&str]) -> ExitCode {
     if args.contains(&"--json") {
         println!(
