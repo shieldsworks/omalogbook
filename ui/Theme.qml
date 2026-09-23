@@ -57,13 +57,52 @@ QtObject {
         return n > 0 && n < 40 ? n : 12;
     }
 
+    // `omarchy theme set` does not rewrite the theme's files. It deletes the
+    // whole `current/theme` directory and moves a new one into its place, so
+    // for as long as that takes there is no colors.toml to read and the watch
+    // is on a directory that has gone. A read landing in that gap fails, and a
+    // failure taken as final leaves the window on the fallbacks above — which
+    // are Tokyo Night's, and so look exactly like a theme switch that didn't
+    // happen.
+    //
+    // Two things keep that from sticking. A failed read is retried a few times
+    // rather than believed, which covers the swap itself; and a slow re-read
+    // catches a swap whose watch went with the directory it was watching. The
+    // colors already in hand are kept through both, so a theme change is a
+    // change of palette rather than a flash through the fallbacks.
+    property int attempt: 0
+    readonly property int attempts: 5
+
+    property Timer retry: Timer {
+        interval: 500
+        repeat: false
+        onTriggered: theme.colorsFile.reload()
+    }
+    // Long enough to cost nothing, short enough that a lost watch is a
+    // nuisance rather than a reason to restart the window.
+    property Timer resettle: Timer {
+        interval: 30000
+        repeat: true
+        running: true
+        onTriggered: theme.colorsFile.reload()
+    }
+
     property FileView colorsFile: FileView {
         path: theme.dir + "/colors.toml"
         watchChanges: true
         printErrors: false
         onFileChanged: reload()
-        onLoaded: theme.colors = theme.read(text())
-        onLoadFailed: theme.colors = ({})
+        onLoaded: {
+            theme.colors = theme.read(text());
+            theme.attempt = 0;
+        }
+        // Bounded, so a theme directory that is genuinely gone settles down
+        // to the slow re-read instead of spinning on it.
+        onLoadFailed: {
+            if (theme.attempt >= theme.attempts) return;
+            theme.attempt++;
+            theme.retry.restart();
+        }
     }
     property FileView shellFile: FileView {
         path: theme.shellConfig
