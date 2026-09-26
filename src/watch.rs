@@ -39,11 +39,18 @@ const SETTLE_SECS: i64 = 3;
 const MAX_REASONS: u8 = 4;
 
 /// A source counts as idle anyway — no reason for a lost fix — if it wasn't
-/// delivering at some point in this window before the last good fix. The
+/// delivering for a good share (`IDLE_SHARE`) of the good fixes in this
+/// window before the last one. A share, not a single moment: a GPS link that
+/// dropped and reconnected in two seconds without costing the fix is not
+/// idle for the next ten minutes, while an AIS receiver on an empty bay,
+/// quiet more often than not, is. The
 /// last few seconds are left out on purpose: when the GPS's own link breaks,
 /// omakeel marks it down a few seconds before the fix goes stale, and that
 /// link is the cause, not a bystander.
 const IDLE_WINDOW: std::ops::RangeInclusive<i64> = 10..=600;
+
+/// One good fix in five with the source not delivering.
+const IDLE_SHARE: usize = 5;
 
 /// A fix that has gone missing, from the moment it went.
 struct Outage {
@@ -94,6 +101,8 @@ pub struct Watch {
     /// When each source was seen not delivering while the fix was good,
     /// over the last `IDLE_WINDOW`.
     unwell: HashMap<String, VecDeque<i64>>,
+    /// When each good fix came, over the same window, to judge the share by.
+    good: VecDeque<i64>,
     /// Satellites and HDOP of the last current fix, to say how good the fix
     /// was just before it went.
     quality: (Option<u32>, Option<f64>),
@@ -121,6 +130,7 @@ impl Watch {
             last_save: 0,
             outage: None,
             unwell: HashMap::new(),
+            good: VecDeque::new(),
             quality: (None, None),
         })
     }
@@ -395,6 +405,10 @@ impl Watch {
             self.unwell.entry(name).or_default().push_back(now);
         }
         let oldest = now - IDLE_WINDOW.end();
+        self.good.push_back(now);
+        while self.good.front().is_some_and(|t| *t < oldest) {
+            self.good.pop_front();
+        }
         self.unwell.retain(|_, seen| {
             while seen.front().is_some_and(|t| *t < oldest) {
                 seen.pop_front();
@@ -403,13 +417,17 @@ impl Watch {
         });
     }
 
-    /// The sources seen not delivering in the window before `last`, the
-    /// last good fix.
+    /// The sources not delivering for a good share of the window before
+    /// `last`, the last good fix.
     fn idle_before(&self, last: i64) -> Vec<String> {
         let window = last - IDLE_WINDOW.end()..=last - IDLE_WINDOW.start();
+        let good = self.good.iter().filter(|t| window.contains(t)).count();
         self.unwell
             .iter()
-            .filter(|(_, seen)| seen.iter().any(|t| window.contains(t)))
+            .filter(|(_, seen)| {
+                let down = seen.iter().filter(|t| window.contains(t)).count();
+                good > 0 && down * IDLE_SHARE >= good
+            })
             .map(|(name, _)| name.clone())
             .collect()
     }
@@ -1140,6 +1158,28 @@ mod tests {
             2,
             "{text}"
         );
+        assert!(!text.contains("sends no position"), "{text}");
+    }
+
+    /// A reset the hub reconnected in two seconds, with the fix never lost,
+    /// doesn't make the link a bystander when it then breaks for real.
+    #[test]
+    fn a_blip_without_a_loss_does_not_make_the_link_idle() {
+        let mut watch = Watch::new(settings("blip")).unwrap();
+        let mut at = 1_789_300_800;
+        let mut run = |watch: &mut Watch, status: &str, link: &str, secs: i64| {
+            for _ in 0..secs {
+                watch.update(state(status, at, &[(GPS, link)]), at).unwrap();
+                at += 1;
+            }
+        };
+        run(&mut watch, "ok", "ok", 60);
+        run(&mut watch, "ok", "error", 2);
+        run(&mut watch, "ok", "ok", 60);
+        run(&mut watch, "ok", "error", 4);
+        run(&mut watch, "stale", "error", 20);
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(text.contains("no fix: tcp:gps:10110 is down"), "{text}");
         assert!(!text.contains("sends no position"), "{text}");
     }
 
