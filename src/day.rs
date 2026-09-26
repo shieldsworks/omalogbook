@@ -413,6 +413,12 @@ fn struck(line: &str) -> bool {
     body_of(line).is_some_and(|(_, body)| body.trim_start().starts_with("~~"))
 }
 
+/// An entry the crew ruled through: it happened and was withdrawn, so
+/// nothing should be worked out from it.
+pub fn is_struck(line: &str) -> bool {
+    struck(line)
+}
+
 fn strike(line: &str) -> String {
     match body_of(line) {
         Some((clock, body)) if !body.trim().is_empty() => {
