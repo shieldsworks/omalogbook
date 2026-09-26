@@ -38,6 +38,8 @@ const MAX_REASONS: u8 = 4;
 struct Outage {
     /// When the watch saw it go.
     since: i64,
+    /// The reason last written, and the latest seen.
+    said: keel::Why,
     /// When the last current fix came, which is when the boat really lost
     /// its position: a link that goes silent only reads as lost once the
     /// fix is five seconds old.
@@ -76,6 +78,8 @@ pub struct Watch {
     last_save: i64,
     /// The fix being lost, while it is.
     outage: Option<Outage>,
+    /// Sources that weren't delivering while the fix was good.
+    idle: Vec<String>,
     /// Satellites and HDOP of the last current fix, to say how good the fix
     /// was just before it went.
     quality: (Option<u32>, Option<f64>),
@@ -102,6 +106,7 @@ impl Watch {
             last_fix: 0,
             last_save: 0,
             outage: None,
+            idle: Vec::new(),
             quality: (None, None),
         })
     }
@@ -109,7 +114,10 @@ impl Watch {
     /// One update from omakeel. Returns what it wrote, for the terminal.
     pub fn update(&mut self, update: keel::Update, now: i64) -> io::Result<Vec<String>> {
         match update {
-            keel::Update::Fix(fix) => self.moved(fix, now),
+            keel::Update::Fix(fix, idle) => {
+                self.idle = idle;
+                self.moved(fix, now)
+            }
             keel::Update::NoFix(why) => self.lost(why, now),
             keel::Update::Lost => self.lost(keel::Why::Hub, now),
             keel::Update::Incompatible(v) => {
@@ -136,15 +144,21 @@ impl Watch {
         }
         // Always this machine's clock, so a receiver a little out of step
         // can't flip the log between two days around midnight.
+        wrote.extend(self.before_midnight(now)?);
         wrote.extend(self.roll_over(now)?);
 
         if !self.has_fix {
             self.has_fix = true;
+            if self.outage.as_ref().is_some_and(|o| !o.written) {
+                wrote.extend(self.write_outage()?);
+            }
             if let Some(outage) = self.outage.take() {
-                if !outage.written {
-                    wrote.extend(self.say_lost(&outage)?);
+                let mut line = format!("fix again after {}", gone_for(now - outage.from));
+                // Past the cap, the reason the fix came back from may never
+                // have been written.
+                if !outage.said.same_as(&outage.why) {
+                    line.push_str(&format!(" · last: {}", outage.why.say()));
                 }
-                let line = format!("fix again after {}", gone_for(now - outage.from));
                 wrote.extend(self.say(at, line)?);
             }
         }
@@ -302,7 +316,8 @@ impl Watch {
     fn lost(&mut self, why: keel::Why, now: i64) -> io::Result<Vec<String>> {
         // Roll the day over here too: past midnight, a lost fix belongs to
         // the new day, not to yesterday's note.
-        let mut wrote = self.roll_over(now)?;
+        let mut wrote = self.before_midnight(now)?;
+        wrote.extend(self.roll_over(now)?);
         wrote.extend(self.no_fix(why, now)?);
         wrote.extend(self.abandon_passage(now)?);
         Ok(wrote)
@@ -313,10 +328,12 @@ impl Watch {
     /// reason changes, because the crew reads this back at the marina to
     /// find out which part of the chain let go.
     fn no_fix(&mut self, why: keel::Why, now: i64) -> io::Result<Vec<String>> {
+        let why = why.without(&self.idle);
         if self.has_fix {
             self.has_fix = false;
             self.outage = Some(Outage {
                 since: now,
+                said: why.clone(),
                 from: self.last_fix,
                 why,
                 written: false,
@@ -328,26 +345,47 @@ impl Watch {
         let Some(outage) = self.outage.as_mut() else {
             return Ok(Vec::new());
         };
+        outage.why = why;
         if !outage.written {
-            outage.why = why;
             if now - outage.since < SETTLE_SECS {
                 return Ok(Vec::new());
             }
-            let outage = self.outage.take().expect("an outage");
-            let wrote = self.say_lost(&outage)?;
-            self.outage = Some(Outage {
-                written: true,
-                ..outage
-            });
-            return Ok(wrote);
+            return self.write_outage();
         }
-        if outage.why.same_as(&why) || outage.changed >= MAX_REASONS {
+        if outage.said.same_as(&outage.why) {
+            return Ok(Vec::new());
+        }
+        // Past the cap, only the hub going is still worth a line: it ends
+        // everything else, and it is the one cause that must not be missed.
+        if outage.changed >= MAX_REASONS && outage.why != keel::Why::Hub {
             return Ok(Vec::new());
         }
         outage.changed += 1;
-        let line = format!("still no fix: {}", why.say());
-        outage.why = why;
+        outage.said = outage.why.clone();
+        let line = format!("still no fix: {}", outage.why.say());
         self.say(now, line)
+    }
+
+    /// The "no fix" line for the outage under way, once.
+    fn write_outage(&mut self) -> io::Result<Vec<String>> {
+        let Some(mut outage) = self.outage.take() else {
+            return Ok(Vec::new());
+        };
+        let wrote = self.say_lost(&outage)?;
+        outage.written = true;
+        outage.said = outage.why.clone();
+        self.outage = Some(outage);
+        Ok(wrote)
+    }
+
+    /// A fix lost just before midnight belongs in the day it was lost in,
+    /// so its line is written before the day turns, settled or not.
+    fn before_midnight(&mut self, now: i64) -> io::Result<Vec<String>> {
+        let pending = self.outage.as_ref().is_some_and(|o| !o.written);
+        if pending && time::local(now).date() != self.day.date {
+            return self.write_outage();
+        }
+        Ok(Vec::new())
     }
 
     /// `no fix: tcp:10.0.2.2:10110 is down (Connection refused) · last fix 9
@@ -462,8 +500,8 @@ impl Watch {
     /// Write and commit everything before stopping.
     pub fn close(&mut self) -> io::Result<()> {
         // A fix lost moments before the log stopped still gets its line.
-        if let Some(outage) = self.outage.take_if(|o| !o.written) {
-            self.say_lost(&outage)?;
+        if self.outage.as_ref().is_some_and(|o| !o.written) {
+            self.write_outage()?;
         }
         if let Some(track) = self.track.take() {
             track.save()?;
@@ -516,15 +554,18 @@ mod tests {
     }
 
     fn fix(lat: f64, lon: f64, sog: f64, at: i64) -> keel::Update {
-        keel::Update::Fix(keel::Fix {
-            lat,
-            lon,
-            sog_kn: Some(sog),
-            cog_deg: Some(245.0),
-            utc: Some(at),
-            satellites: Some(9),
-            hdop: Some(0.9),
-        })
+        keel::Update::Fix(
+            keel::Fix {
+                lat,
+                lon,
+                sog_kn: Some(sog),
+                cog_deg: Some(245.0),
+                utc: Some(at),
+                satellites: Some(9),
+                hdop: Some(0.9),
+            },
+            Vec::new(),
+        )
     }
 
     /// A short sail: away from the berth, half an hour out, then still.
@@ -969,5 +1010,122 @@ mod tests {
         assert_eq!(gone_for(29 * 60 + 5), "29 min");
         assert_eq!(gone_for(3900), "1 h 5 min");
         assert_eq!(gone_for(-3), "0 s");
+    }
+
+    fn source(name: &str, state: &'static str) -> keel::Link {
+        keel::Link {
+            name: name.into(),
+            state,
+            message: None,
+        }
+    }
+
+    /// An AIS receiver on an empty bay goes quiet and back all day. It was
+    /// quiet while the fix was good, so it is no reason for the fix to go,
+    /// and its comings and goings don't spend the outage's lines.
+    #[test]
+    fn an_idle_ais_receiver_is_not_blamed() {
+        let mut watch = Watch::new(settings("ais")).unwrap();
+        let t = 1_789_300_800;
+        let ais = "serial:/dev/ais:38400";
+        let good = |at: i64| {
+            keel::Update::Fix(
+                keel::Fix {
+                    lat: 37.8663,
+                    lon: -122.3148,
+                    sog_kn: Some(5.0),
+                    cog_deg: Some(245.0),
+                    utc: Some(at),
+                    satellites: Some(9),
+                    hdop: Some(0.9),
+                },
+                vec![ais.to_string()],
+            )
+        };
+        watch.update(good(t), t).unwrap();
+        for second in 1..=40 {
+            let mut links = vec![source("tcp:gps:10110", "down")];
+            if second % 7 < 3 {
+                links.push(source(ais, "quiet"));
+            }
+            watch
+                .update(keel::Update::NoFix(keel::Why::Links(links)), t + second)
+                .unwrap();
+        }
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(text.contains("no fix: tcp:gps:10110 is down ·"), "{text}");
+        assert!(!text.contains(ais), "{text}");
+        assert!(!text.contains("still no fix"), "{text}");
+
+        // The GPS talking but sending no position, with the AIS quiet beside
+        // it, is the receiver's doing, not the AIS's.
+        watch.update(good(t + 50), t + 50).unwrap();
+        for second in 51..=55 {
+            watch
+                .update(
+                    keel::Update::NoFix(keel::Why::Links(vec![source(ais, "quiet")])),
+                    t + second,
+                )
+                .unwrap();
+        }
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(
+            text.contains("no fix: the receiver is talking but sends no position"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_fix_lost_before_midnight_is_in_that_days_note() {
+        let s = settings("late");
+        let vault = s.vault.clone();
+        let mut watch = Watch::new(s).unwrap();
+        let midnight = {
+            let now = time::now();
+            let l = time::local(now);
+            now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second) + 86_400
+        };
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, midnight - 10), midnight - 10)
+            .unwrap();
+        let before = watch.day_path().to_path_buf();
+        watch.update(link("down", None), midnight - 2).unwrap();
+        watch.update(link("down", None), midnight + 2).unwrap();
+        let old = fs::read_to_string(&before).unwrap();
+        assert!(old.contains("no fix: tcp:10.0.2.2:10110 is down"), "{old}");
+        let new = fs::read_to_string(watch.day_path()).unwrap_or_default();
+        assert!(!new.contains("no fix:"), "{new}");
+        let _ = fs::remove_dir_all(&vault);
+    }
+
+    /// Past the cap, the hub going is still written, and the fix coming
+    /// back says what it came back from.
+    #[test]
+    fn past_the_cap_the_hub_and_the_last_reason_still_show() {
+        let (mut watch, t) = under_way("capped");
+        for second in 1..=20 {
+            let update = if second % 2 == 0 {
+                link("quiet", None)
+            } else {
+                link("down", None)
+            };
+            watch.update(update, t + second).unwrap();
+        }
+        watch.update(keel::Update::Lost, t + 21).unwrap();
+        watch.update(link("quiet", None), t + 23).unwrap();
+        watch
+            .update(fix(37.8700, -122.3148, 5.0, t + 25), t + 25)
+            .unwrap();
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(
+            text.contains("still no fix: omakeel, the hub, isn't answering"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "fix again after 25 s · last: tcp:10.0.2.2:10110 is connected but sending nothing"
+            ),
+            "{text}"
+        );
     }
 }

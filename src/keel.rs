@@ -64,8 +64,10 @@ pub struct Link {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
-    /// A current fix: less than five seconds old.
-    Fix(Fix),
+    /// A current fix: less than five seconds old, and the sources that
+    /// weren't delivering even so — an AIS receiver on an empty bay, say —
+    /// which are no reason for the fix to go when it later does.
+    Fix(Fix, Vec<String>),
     /// No current fix, and why. A stale position is dropped here: it says
     /// where the boat was, not where it is, and the log has no use for it.
     NoFix(Why),
@@ -88,6 +90,26 @@ impl Why {
                         .all(|(x, y)| x.name == y.name && x.state == y.state)
             }
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+
+    /// This reason without the sources that were already idle while the fix
+    /// was good. What is left is what changed, and that is the cause; with
+    /// nothing left, the receiver's own link was fine.
+    pub fn without(self, idle: &[String]) -> Why {
+        match self {
+            Why::Links(links) => {
+                let links: Vec<Link> = links
+                    .into_iter()
+                    .filter(|l| !idle.contains(&l.name))
+                    .collect();
+                if links.is_empty() {
+                    Why::Silent
+                } else {
+                    Why::Links(links)
+                }
+            }
+            other => other,
         }
     }
 
@@ -146,18 +168,24 @@ pub fn read(line: &str) -> Option<Update> {
         && (-90.0..=90.0).contains(&lat)
         && (-180.0..=180.0).contains(&lon)
     {
-        return Some(Update::Fix(Fix {
-            lat,
-            lon,
-            sog_kn: number("sogKn").filter(|k| (0.0..=100.0).contains(k)),
-            cog_deg: number("cogDeg"),
-            utc: fix
-                .get("utc")
-                .and_then(Value::as_str)
-                .and_then(crate::time::parse_utc),
-            satellites,
-            hdop,
-        }));
+        return Some(Update::Fix(
+            Fix {
+                lat,
+                lon,
+                sog_kn: number("sogKn").filter(|k| (0.0..=100.0).contains(k)),
+                cog_deg: number("cogDeg"),
+                utc: fix
+                    .get("utc")
+                    .and_then(Value::as_str)
+                    .and_then(crate::time::parse_utc),
+                satellites,
+                hdop,
+            },
+            unwell(m.get("sources"))
+                .into_iter()
+                .map(|l| l.name)
+                .collect(),
+        ));
     }
     Some(Update::NoFix(why(status, m.get("sources"))))
 }
@@ -173,7 +201,17 @@ fn why(status: &str, sources: Option<&Value>) -> Why {
     if status == "nofix" {
         return Why::Receiver;
     }
-    let links: Vec<Link> = sources
+    let links = unwell(sources);
+    if links.is_empty() {
+        Why::Silent
+    } else {
+        Why::Links(links)
+    }
+}
+
+/// The sources that aren't delivering, as omakeel lists them.
+fn unwell(sources: Option<&Value>) -> Vec<Link> {
+    sources
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
@@ -191,12 +229,7 @@ fn why(status: &str, sources: Option<&Value>) -> Why {
                 message: text(s.get("message")),
             })
         })
-        .collect();
-    if links.is_empty() {
-        Why::Silent
-    } else {
-        Why::Links(links)
-    }
+        .collect()
 }
 
 /// A short, single-line string from the hub, or nothing. It goes into a
@@ -231,7 +264,7 @@ pub fn once(socket: &Path, wait: Duration) -> Option<Fix> {
         match std::io::BufRead::read_line(&mut reader, &mut line) {
             Ok(0) | Err(_) => return None,
             Ok(_) => match read(line.trim_end()) {
-                Some(Update::Fix(fix)) => return Some(fix),
+                Some(Update::Fix(fix, _)) => return Some(fix),
                 Some(Update::NoFix(_) | Update::Incompatible(_)) => return None,
                 _ => {}
             },
@@ -300,7 +333,7 @@ mod tests {
 
     #[test]
     fn reads_a_fix() {
-        let Some(Update::Fix(fix)) = read(STATE) else {
+        let Some(Update::Fix(fix, _)) = read(STATE) else {
             panic!("no fix");
         };
         assert_eq!(fix.lat, 37.864_711);
@@ -372,6 +405,30 @@ mod tests {
     }
 
     #[test]
+    fn a_good_fix_names_the_sources_already_idle() {
+        let line = STATE.replace(
+            r#""ageSeconds":0}"#,
+            r#""ageSeconds":0},"sources":[{"name":"tcp:gps:10110","status":"ok"},{"name":"serial:/dev/ais:38400","status":"quiet"}]"#,
+        );
+        let Some(Update::Fix(_, idle)) = read(&line) else {
+            panic!("no fix");
+        };
+        assert_eq!(idle, ["serial:/dev/ais:38400"]);
+        let quiet = |name: &str| Link {
+            name: name.into(),
+            state: "quiet",
+            message: None,
+        };
+        let both = Why::Links(vec![quiet("tcp:gps:10110"), quiet("serial:/dev/ais:38400")]);
+        assert_eq!(
+            both.without(&idle),
+            Why::Links(vec![quiet("tcp:gps:10110")])
+        );
+        let ais = Why::Links(vec![quiet("serial:/dev/ais:38400")]);
+        assert_eq!(ais.without(&idle), Why::Silent);
+    }
+
+    #[test]
     fn a_retrying_link_is_one_reason() {
         let down = |message: Option<&str>| {
             Why::Links(vec![Link {
@@ -429,7 +486,7 @@ mod tests {
             assert!(matches!(read(&line), Some(Update::NoFix(_))), "{bad}");
         }
         let line = STATE.replace("\"sogKn\":5.0", "\"sogKn\":1e9");
-        let Some(Update::Fix(fix)) = read(&line) else {
+        let Some(Update::Fix(fix, _)) = read(&line) else {
             panic!("no fix");
         };
         assert_eq!(fix.sog_kn, None);
