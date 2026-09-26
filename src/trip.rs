@@ -138,15 +138,17 @@ fn epoch_of(date: &str, line: &str) -> Option<i64> {
     let offset_minutes = if after.starts_with(" UTC") {
         0
     } else if let Some(utc) = after.strip_prefix(" (").and_then(|s| s.get(..5)) {
-        // Zones run from 12 hours behind to 14 ahead; the gap between the
-        // clocks is the one of those that fits.
-        let mut gap = local - minutes(utc)?;
-        if gap > 14 * 60 {
-            gap -= 1440;
-        } else if gap < -12 * 60 {
-            gap += 1440;
-        }
-        gap
+        // The clocks give the zone only up to a whole day: Hawaii at -10
+        // and Kiritimati at +14 show the same pair. Of the zones that fit
+        // (12 hours behind to 14 ahead), take the one nearest this machine's
+        // at that moment, which is the zone the entry was almost certainly
+        // written in, and is only a tie-breaker when it wasn't.
+        let gap = local - minutes(utc)?;
+        let here = time::local(naive).offset / 60;
+        [gap - 1440, gap, gap + 1440]
+            .into_iter()
+            .filter(|g| (-12 * 60..=14 * 60).contains(g))
+            .min_by_key(|g| (g - here).abs())?
     } else {
         // An entry with one clock, written by hand: take the zone as it
         // stands here.
@@ -509,11 +511,19 @@ mod tests {
         assert!(summary(&v, START + 3600, 1.0).is_empty());
     }
 
-    /// A departure yesterday evening, berthed this morning.
+    /// A departure at 21:00 local, berthed at 03:00: the `Departed` is in
+    /// yesterday's note and the `/berth` is written into today's.
     #[test]
     fn a_trip_can_run_past_midnight() {
         let v = vault("overnight");
-        let depart = START + 86_400 - 3 * 3600;
+        let depart = (0..24)
+            .map(|h| START + h * 3600)
+            .find(|t| time::local(*t).hour == 21)
+            .expect("an hour that is 21:00 here");
+        assert_ne!(
+            time::local(depart).date(),
+            time::local(depart + 6 * 3600).date()
+        );
         note(&v, depart, &[mark_line(depart, "Departed")]);
         track(&v, depart, 6 * 3600, 37.8663, 4.0);
         let parts = summary(&v, depart + 6 * 3600, 1.0);
