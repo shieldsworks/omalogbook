@@ -56,8 +56,9 @@ pub enum Why {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Link {
     pub name: String,
-    /// `down` (omakeel's `error` and `connecting`, which alternate while it
-    /// retries), `quiet` or `ended`.
+    /// `down` (omakeel's `error`, which it stays in while it retries),
+    /// `connecting` (reached, or starting, and nothing heard yet), `quiet` or
+    /// `ended`.
     pub state: &'static str,
     pub message: Option<String>,
 }
@@ -79,15 +80,21 @@ pub enum Update {
 
 impl Why {
     /// Two reasons are the same for the log when they would send the crew to
-    /// the same place, so a source flipping between `error` and `connecting`
-    /// every two seconds while it retries is one reason, not a stream of them.
+    /// the same place. A link that is down and a link that is connecting are
+    /// one reason: a bridge that accepts and hangs up flips between the two
+    /// every two seconds, and a reconnect passes through `connecting` on its
+    /// way back. Either would otherwise be a stream of lines.
     pub fn same_as(&self, other: &Why) -> bool {
+        // `connecting` reads as its own words, but it is the same place to look.
+        fn class(state: &'static str) -> &'static str {
+            if state == "connecting" { "down" } else { state }
+        }
         match (self, other) {
             (Why::Links(a), Why::Links(b)) => {
                 a.len() == b.len()
                     && a.iter()
                         .zip(b)
-                        .all(|(x, y)| x.name == y.name && x.state == y.state)
+                        .all(|(x, y)| x.name == y.name && class(x.state) == class(y.state))
             }
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
@@ -113,6 +120,24 @@ impl Why {
         }
     }
 
+    /// How much a reason says within its kind: a link that is down with the
+    /// error says more than one that is down, which says more than one that
+    /// is connecting. Between two reasons that are the same place to look,
+    /// the one that says more is the one to keep.
+    pub fn detail(&self) -> u32 {
+        match self {
+            Why::Links(links) => links
+                .iter()
+                .map(|l| match (l.state, &l.message) {
+                    ("down", Some(_)) => 2,
+                    ("down", None) => 1,
+                    _ => 0,
+                })
+                .sum(),
+            _ => 0,
+        }
+    }
+
     /// The reason in words, for the log.
     pub fn say(&self) -> String {
         match self {
@@ -122,6 +147,7 @@ impl Why {
                 .map(|l| match (l.state, &l.message) {
                     ("down", Some(m)) => format!("{} is down ({m})", l.name),
                     ("down", None) => format!("{} is down", l.name),
+                    ("connecting", _) => format!("{} is connecting", l.name),
                     ("quiet", _) => format!("{} is connected but sending nothing", l.name),
                     _ => format!("{} has ended", l.name),
                 })
@@ -218,7 +244,10 @@ fn unwell(sources: Option<&Value>) -> Vec<Link> {
         .take(32)
         .filter_map(|s| {
             let state = match s.get("status").and_then(Value::as_str)? {
-                "error" | "connecting" => "down",
+                "error" => "down",
+                // The link starting, or just reached, with nothing heard yet.
+                // Not "down", which it may not be; not up, which it isn't yet.
+                "connecting" => "connecting",
                 "quiet" => "quiet",
                 "ended" => "ended",
                 _ => return None,
@@ -379,7 +408,7 @@ mod tests {
                 stale,
                 r#"[{"name":"tcp:10.0.2.2:10110","status":"connecting"}]"#
             ),
-            "tcp:10.0.2.2:10110 is down"
+            "tcp:10.0.2.2:10110 is connecting"
         );
         assert_eq!(
             state(

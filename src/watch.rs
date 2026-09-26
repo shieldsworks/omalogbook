@@ -379,14 +379,23 @@ impl Watch {
         let Some(outage) = self.outage.as_mut() else {
             return Ok(Vec::new());
         };
-        outage.why = why.without(&outage.idle);
+        let why = why.without(&outage.idle);
+        // Between two reasons that are the same place to look, the one that
+        // says more wins: `connecting` after `down (Connection refused)`
+        // doesn't replace it, and the error does replace `connecting`.
+        if !outage.why.same_as(&why) || why.detail() > outage.why.detail() {
+            outage.why = why;
+        }
         if !outage.written {
             if now - outage.since < SETTLE_SECS {
                 return Ok(Vec::new());
             }
             return self.write_outage();
         }
-        if outage.said.same_as(&outage.why) {
+        // The same place to look, unless all the log has said is that the
+        // link is connecting and now there's an error to say.
+        let now_says_why = outage.said.detail() == 0 && outage.why.detail() > 0;
+        if outage.said.same_as(&outage.why) && !now_says_why {
             return Ok(Vec::new());
         }
         // Past the cap, only the hub going is still worth a line: it ends
@@ -1140,12 +1149,8 @@ mod tests {
                     .unwrap();
                 at += 1;
             }
-            for second in 0..20 {
-                let link = if second % 2 == 0 {
-                    "error"
-                } else {
-                    "connecting"
-                };
+            for _ in 0..20 {
+                let link = "error";
                 watch
                     .update(state("stale", at, &[(GPS, link)]), at)
                     .unwrap();
@@ -1227,11 +1232,7 @@ mod tests {
         }
         for second in 9..20 {
             let at = t + second;
-            let link = if second % 2 == 0 {
-                "error"
-            } else {
-                "connecting"
-            };
+            let link = "error";
             watch
                 .update(state("stale", at, &[(GPS, link)]), at)
                 .unwrap();
@@ -1294,6 +1295,194 @@ mod tests {
                 "fix again after 25 s · last: tcp:10.0.2.2:10110 is connected but sending nothing"
             ),
             "{text}"
+        );
+    }
+
+    /// The Mac's bridge coming back with nothing behind it: refused, then
+    /// reached, then silent. Each step is its own line, and none of them
+    /// calls a link that answered "down".
+    #[test]
+    fn a_bridge_that_comes_back_empty_says_so() {
+        let mut watch = Watch::new(settings("bridge")).unwrap();
+        let mut at = 1_789_300_800;
+        let mut run = |watch: &mut Watch, status: &str, link: &str, secs: i64| {
+            for _ in 0..secs {
+                watch.update(state(status, at, &[(GPS, link)]), at).unwrap();
+                at += 1;
+            }
+        };
+        run(&mut watch, "ok", "ok", 60);
+        run(&mut watch, "stale", "error", 6);
+        run(&mut watch, "stale", "connecting", 5);
+        run(&mut watch, "stale", "quiet", 10);
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("no fix"))
+            .map(|l| l.split(" — ").nth(1).unwrap_or(l))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "no fix: tcp:gps:10110 is down (Connection reset by peer) · last fix 9 satellites, HDOP 0.9",
+                "still no fix: tcp:gps:10110 is connected but sending nothing",
+            ],
+            "{text}"
+        );
+    }
+
+    fn no_fix_lines(watch: &Watch) -> Vec<String> {
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        text.lines()
+            .filter(|l| l.contains("fix"))
+            .filter_map(|l| l.split(" — ").nth(1))
+            .filter(|l| !l.starts_with("log opened"))
+            .map(|l| l.split(" · last fix").next().unwrap_or(l).to_string())
+            .collect()
+    }
+
+    /// A bridge that is up with no GPS behind it accepts and hangs up every
+    /// two seconds. That's one reason, not a line every flip.
+    #[test]
+    fn a_bridge_that_accepts_and_hangs_up_is_one_line() {
+        let mut watch = Watch::new(settings("flip")).unwrap();
+        let mut at = 1_789_300_800;
+        for _ in 0..60 {
+            watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+            at += 1;
+        }
+        for second in 0..60 {
+            let link = if second % 2 == 0 {
+                "error"
+            } else {
+                "connecting"
+            };
+            watch
+                .update(state("stale", at, &[(GPS, link)]), at)
+                .unwrap();
+            at += 1;
+        }
+        assert_eq!(
+            no_fix_lines(&watch),
+            ["no fix: tcp:gps:10110 is down (Connection reset by peer)"]
+        );
+    }
+
+    /// A reset the hub reconnects within the settling time: the reset is
+    /// the reason, not the reconnect.
+    #[test]
+    fn a_quick_reconnect_keeps_the_reset_as_the_reason() {
+        let mut watch = Watch::new(settings("quick")).unwrap();
+        let mut at = 1_789_300_800;
+        let mut run = |watch: &mut Watch, status: &str, link: &str, secs: i64| {
+            for _ in 0..secs {
+                watch.update(state(status, at, &[(GPS, link)]), at).unwrap();
+                at += 1;
+            }
+        };
+        run(&mut watch, "ok", "ok", 60);
+        run(&mut watch, "stale", "error", 1);
+        run(&mut watch, "stale", "connecting", 3);
+        run(&mut watch, "ok", "ok", 1);
+        assert_eq!(
+            no_fix_lines(&watch),
+            [
+                "no fix: tcp:gps:10110 is down (Connection reset by peer)",
+                "fix again after 5 s"
+            ]
+        );
+    }
+
+    /// After the hub restarts, a link still coming up is said as such.
+    #[test]
+    fn a_link_coming_up_after_the_hub_is_connecting() {
+        let mut watch = Watch::new(settings("restart")).unwrap();
+        let mut at = 1_789_300_800;
+        for _ in 0..60 {
+            watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+            at += 1;
+        }
+        for _ in 0..5 {
+            watch.update(keel::Update::Lost, at).unwrap();
+            at += 1;
+        }
+        for _ in 0..3 {
+            watch
+                .update(state("none", at, &[(GPS, "connecting")]), at)
+                .unwrap();
+            at += 1;
+        }
+        assert_eq!(
+            no_fix_lines(&watch),
+            [
+                "no fix: omakeel, the hub, isn't answering",
+                "still no fix: tcp:gps:10110 is connecting"
+            ]
+        );
+    }
+
+    /// A bridge flip that happens to be caught connecting still gets its
+    /// error written.
+    #[test]
+    fn a_flip_caught_connecting_still_says_the_error() {
+        let mut watch = Watch::new(settings("caught")).unwrap();
+        let mut at = 1_789_300_800;
+        for _ in 0..60 {
+            watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+            at += 1;
+        }
+        for second in 0..30 {
+            let link = if second % 3 == 0 {
+                "connecting"
+            } else {
+                "error"
+            };
+            watch
+                .update(state("stale", at, &[(GPS, link)]), at)
+                .unwrap();
+            at += 1;
+        }
+        let lines = no_fix_lines(&watch);
+        assert_eq!(
+            lines,
+            ["no fix: tcp:gps:10110 is down (Connection reset by peer)"],
+            "{lines:?}"
+        );
+    }
+
+    /// After a hub restart, "connecting" and then refused: the refusal is
+    /// written, once.
+    #[test]
+    fn connecting_then_refused_says_refused() {
+        let mut watch = Watch::new(settings("refused")).unwrap();
+        let mut at = 1_789_300_800;
+        for _ in 0..60 {
+            watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+            at += 1;
+        }
+        for _ in 0..5 {
+            watch.update(keel::Update::Lost, at).unwrap();
+            at += 1;
+        }
+        for _ in 0..4 {
+            watch
+                .update(state("none", at, &[(GPS, "connecting")]), at)
+                .unwrap();
+            at += 1;
+        }
+        for _ in 0..30 {
+            watch
+                .update(state("none", at, &[(GPS, "error")]), at)
+                .unwrap();
+            at += 1;
+        }
+        assert_eq!(
+            no_fix_lines(&watch),
+            [
+                "no fix: omakeel, the hub, isn't answering",
+                "still no fix: tcp:gps:10110 is connecting",
+                "still no fix: tcp:gps:10110 is down (Connection reset by peer)"
+            ]
         );
     }
 }
