@@ -56,8 +56,9 @@ pub enum Why {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Link {
     pub name: String,
-    /// `down` (omakeel's `error` and `connecting`, which alternate while it
-    /// retries), `quiet` or `ended`.
+    /// `down` (omakeel's `error`, which it stays in while it retries),
+    /// `connecting` (reached, or starting, and nothing heard yet), `quiet` or
+    /// `ended`.
     pub state: &'static str,
     pub message: Option<String>,
 }
@@ -122,6 +123,7 @@ impl Why {
                 .map(|l| match (l.state, &l.message) {
                     ("down", Some(m)) => format!("{} is down ({m})", l.name),
                     ("down", None) => format!("{} is down", l.name),
+                    ("connecting", _) => format!("{} is connecting", l.name),
                     ("quiet", _) => format!("{} is connected but sending nothing", l.name),
                     _ => format!("{} has ended", l.name),
                 })
@@ -218,7 +220,10 @@ fn unwell(sources: Option<&Value>) -> Vec<Link> {
         .take(32)
         .filter_map(|s| {
             let state = match s.get("status").and_then(Value::as_str)? {
-                "error" | "connecting" => "down",
+                "error" => "down",
+                // After an error this is the link coming back, not going: the
+                // bridge answered, and the first line hasn't come yet.
+                "connecting" => "connecting",
                 "quiet" => "quiet",
                 "ended" => "ended",
                 _ => return None,
@@ -379,7 +384,7 @@ mod tests {
                 stale,
                 r#"[{"name":"tcp:10.0.2.2:10110","status":"connecting"}]"#
             ),
-            "tcp:10.0.2.2:10110 is down"
+            "tcp:10.0.2.2:10110 is connecting"
         );
         assert_eq!(
             state(

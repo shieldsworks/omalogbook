@@ -305,6 +305,27 @@ from this machine when they disagree by more than an hour — a receiver with th
 wrong week, or a recording being replayed, would otherwise file entries days
 away from the day they were written. When that happens the log says so, once.
 
+## When the fix goes
+
+A lost fix is written with the reason omakeel gives for it, so a log read back
+at the marina says which part of the chain let go:
+
+| The log says | What it means | Where to look |
+|---|---|---|
+| `the receiver has no fix` | The GPS is talking and says it can't fix | Sky view, antenna, the receiver |
+| `the receiver is talking but sends no position` | Sentences arrive, none with a position | The receiver's settings |
+| `… is down (message)` | The link can't be opened or reached | Cable, USB, the bridge |
+| `… is connecting` | The link answered and nothing has come yet | Usually a few seconds; see the next line |
+| `… is connected but sending nothing` | The link is up and silent | The GPS behind the bridge |
+| `omakeel, the hub, isn't answering` | The hub stopped | omakeel itself |
+
+The line ends with the last fix's satellites and HDOP, a change of reason
+while the fix is gone gets a `still no fix` line (four at most), and `fix again
+after 29 min` counts from the last good fix. A source that was already idle
+before the fix went, such as an AIS receiver on an empty bay, isn't named as
+the reason. For the moment-by-moment detail, omakeel's recording carries the
+same events as `#` lines.
+
 ## Privacy
 
 A log is a record of where the boat actually was, at what time, night by night.

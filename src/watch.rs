@@ -1140,12 +1140,8 @@ mod tests {
                     .unwrap();
                 at += 1;
             }
-            for second in 0..20 {
-                let link = if second % 2 == 0 {
-                    "error"
-                } else {
-                    "connecting"
-                };
+            for _ in 0..20 {
+                let link = "error";
                 watch
                     .update(state("stale", at, &[(GPS, link)]), at)
                     .unwrap();
@@ -1227,11 +1223,7 @@ mod tests {
         }
         for second in 9..20 {
             let at = t + second;
-            let link = if second % 2 == 0 {
-                "error"
-            } else {
-                "connecting"
-            };
+            let link = "error";
             watch
                 .update(state("stale", at, &[(GPS, link)]), at)
                 .unwrap();
@@ -1293,6 +1285,40 @@ mod tests {
             text.contains(
                 "fix again after 25 s · last: tcp:10.0.2.2:10110 is connected but sending nothing"
             ),
+            "{text}"
+        );
+    }
+
+    /// The Mac's bridge coming back with nothing behind it: refused, then
+    /// reached, then silent. Each step is its own line, and none of them
+    /// calls a link that answered "down".
+    #[test]
+    fn a_bridge_that_comes_back_empty_says_so() {
+        let mut watch = Watch::new(settings("bridge")).unwrap();
+        let mut at = 1_789_300_800;
+        let mut run = |watch: &mut Watch, status: &str, link: &str, secs: i64| {
+            for _ in 0..secs {
+                watch.update(state(status, at, &[(GPS, link)]), at).unwrap();
+                at += 1;
+            }
+        };
+        run(&mut watch, "ok", "ok", 60);
+        run(&mut watch, "stale", "error", 6);
+        run(&mut watch, "stale", "connecting", 5);
+        run(&mut watch, "stale", "quiet", 10);
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("no fix"))
+            .map(|l| l.split(" — ").nth(1).unwrap_or(l))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "no fix: tcp:gps:10110 is down (Connection reset by peer) · last fix 9 satellites, HDOP 0.9",
+                "still no fix: tcp:gps:10110 is connecting",
+                "still no fix: tcp:gps:10110 is connected but sending nothing",
+            ],
             "{text}"
         );
     }
