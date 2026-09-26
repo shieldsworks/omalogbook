@@ -345,6 +345,14 @@ impl Watch {
         if self.has_fix {
             self.has_fix = false;
             let idle = self.idle_before(self.last_fix);
+            // What the sources did in the moments before this loss belongs
+            // to this loss. Kept, it would make a link that breaks twice in
+            // ten minutes look idle the second time.
+            let cause = self.last_fix - IDLE_WINDOW.start();
+            self.unwell.retain(|_, seen| {
+                seen.retain(|t| *t < cause);
+                !seen.is_empty()
+            });
             let why = why.without(&idle);
             self.outage = Some(Outage {
                 idle,
@@ -1095,6 +1103,44 @@ mod tests {
         assert!(text.contains("no fix: tcp:gps:10110 is down"), "{text}");
         assert!(!text.contains(AIS), "{text}");
         assert!(!text.contains("still no fix"), "{text}");
+    }
+
+    /// The Sept. 21 pattern: the same link breaking again and again. Every
+    /// break is the link's, not only the first.
+    #[test]
+    fn a_link_that_breaks_twice_is_named_twice() {
+        let mut watch = Watch::new(settings("twice")).unwrap();
+        let mut at = 1_789_300_800;
+        for _ in 0..2 {
+            for _ in 0..60 {
+                watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+                at += 1;
+            }
+            for _ in 0..4 {
+                watch
+                    .update(state("ok", at, &[(GPS, "error")]), at)
+                    .unwrap();
+                at += 1;
+            }
+            for second in 0..20 {
+                let link = if second % 2 == 0 {
+                    "error"
+                } else {
+                    "connecting"
+                };
+                watch
+                    .update(state("stale", at, &[(GPS, link)]), at)
+                    .unwrap();
+                at += 1;
+            }
+        }
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert_eq!(
+            text.matches("no fix: tcp:gps:10110 is down").count(),
+            2,
+            "{text}"
+        );
+        assert!(!text.contains("sends no position"), "{text}");
     }
 
     /// The GPS talking but sending no position, with the AIS quiet beside
