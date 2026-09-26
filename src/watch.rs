@@ -379,7 +379,13 @@ impl Watch {
         let Some(outage) = self.outage.as_mut() else {
             return Ok(Vec::new());
         };
-        outage.why = why.without(&outage.idle);
+        let why = why.without(&outage.idle);
+        // A reason that says the same thing with less, as `connecting` after
+        // `down (Connection refused)` does, doesn't replace it: the error is
+        // the useful part.
+        if !outage.why.same_as(&why) {
+            outage.why = why;
+        }
         if !outage.written {
             if now - outage.since < SETTLE_SECS {
                 return Ok(Vec::new());
@@ -1316,10 +1322,99 @@ mod tests {
             lines,
             [
                 "no fix: tcp:gps:10110 is down (Connection reset by peer) · last fix 9 satellites, HDOP 0.9",
-                "still no fix: tcp:gps:10110 is connecting",
                 "still no fix: tcp:gps:10110 is connected but sending nothing",
             ],
             "{text}"
+        );
+    }
+
+    fn no_fix_lines(watch: &Watch) -> Vec<String> {
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        text.lines()
+            .filter(|l| l.contains("fix"))
+            .filter_map(|l| l.split(" — ").nth(1))
+            .filter(|l| !l.starts_with("log opened"))
+            .map(|l| l.split(" · last fix").next().unwrap_or(l).to_string())
+            .collect()
+    }
+
+    /// A bridge that is up with no GPS behind it accepts and hangs up every
+    /// two seconds. That's one reason, not a line every flip.
+    #[test]
+    fn a_bridge_that_accepts_and_hangs_up_is_one_line() {
+        let mut watch = Watch::new(settings("flip")).unwrap();
+        let mut at = 1_789_300_800;
+        for _ in 0..60 {
+            watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+            at += 1;
+        }
+        for second in 0..60 {
+            let link = if second % 2 == 0 {
+                "error"
+            } else {
+                "connecting"
+            };
+            watch
+                .update(state("stale", at, &[(GPS, link)]), at)
+                .unwrap();
+            at += 1;
+        }
+        assert_eq!(
+            no_fix_lines(&watch),
+            ["no fix: tcp:gps:10110 is down (Connection reset by peer)"]
+        );
+    }
+
+    /// A reset the hub reconnects within the settling time: the reset is
+    /// the reason, not the reconnect.
+    #[test]
+    fn a_quick_reconnect_keeps_the_reset_as_the_reason() {
+        let mut watch = Watch::new(settings("quick")).unwrap();
+        let mut at = 1_789_300_800;
+        let mut run = |watch: &mut Watch, status: &str, link: &str, secs: i64| {
+            for _ in 0..secs {
+                watch.update(state(status, at, &[(GPS, link)]), at).unwrap();
+                at += 1;
+            }
+        };
+        run(&mut watch, "ok", "ok", 60);
+        run(&mut watch, "stale", "error", 1);
+        run(&mut watch, "stale", "connecting", 3);
+        run(&mut watch, "ok", "ok", 1);
+        assert_eq!(
+            no_fix_lines(&watch),
+            [
+                "no fix: tcp:gps:10110 is down (Connection reset by peer)",
+                "fix again after 5 s"
+            ]
+        );
+    }
+
+    /// After the hub restarts, a link still coming up is said as such.
+    #[test]
+    fn a_link_coming_up_after_the_hub_is_connecting() {
+        let mut watch = Watch::new(settings("restart")).unwrap();
+        let mut at = 1_789_300_800;
+        for _ in 0..60 {
+            watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+            at += 1;
+        }
+        for _ in 0..5 {
+            watch.update(keel::Update::Lost, at).unwrap();
+            at += 1;
+        }
+        for _ in 0..3 {
+            watch
+                .update(state("none", at, &[(GPS, "connecting")]), at)
+                .unwrap();
+            at += 1;
+        }
+        assert_eq!(
+            no_fix_lines(&watch),
+            [
+                "no fix: omakeel, the hub, isn't answering",
+                "still no fix: tcp:gps:10110 is connecting"
+            ]
         );
     }
 }

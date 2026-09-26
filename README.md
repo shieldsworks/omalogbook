@@ -315,12 +315,14 @@ at the marina says which part of the chain let go:
 | `the receiver has no fix` | The GPS is talking and says it can't fix | Sky view, antenna, the receiver |
 | `the receiver is talking but sends no position` | Sentences arrive, none with a position | The receiver's settings |
 | `… is down (message)` | The link can't be opened or reached | Cable, USB, the bridge |
-| `… is connecting` | The link answered and nothing has come yet | Usually a few seconds; see the next line |
+| `… is connecting` | The link is starting, or was just reached, and nothing has come yet | Written only when it's the first thing seen, e.g. after the hub restarted |
 | `… is connected but sending nothing` | The link is up and silent | The GPS behind the bridge |
 | `omakeel, the hub, isn't answering` | The hub stopped | omakeel itself |
+| `… has ended` | A replayed recording ran out | Nothing: it's a replay |
 
 The line ends with the last fix's satellites and HDOP, a change of reason
-while the fix is gone gets a `still no fix` line (four at most), and `fix again
+while the fix is gone gets a `still no fix` line (four at most, though the hub stopping is always
+written), a link that is connecting counts as still down, and `fix again
 after 29 min` counts from the last good fix. A source that was already idle
 before the fix went, such as an AIS receiver on an empty bay, isn't named as
 the reason. For the moment-by-moment detail, omakeel's recording carries the

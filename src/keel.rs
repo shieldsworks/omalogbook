@@ -80,15 +80,21 @@ pub enum Update {
 
 impl Why {
     /// Two reasons are the same for the log when they would send the crew to
-    /// the same place, so a source flipping between `error` and `connecting`
-    /// every two seconds while it retries is one reason, not a stream of them.
+    /// the same place. A link that is down and a link that is connecting are
+    /// one reason: a bridge that accepts and hangs up flips between the two
+    /// every two seconds, and a reconnect passes through `connecting` on its
+    /// way back. Either would otherwise be a stream of lines.
     pub fn same_as(&self, other: &Why) -> bool {
+        // `connecting` reads as its own words, but it is the same place to look.
+        fn class(state: &'static str) -> &'static str {
+            if state == "connecting" { "down" } else { state }
+        }
         match (self, other) {
             (Why::Links(a), Why::Links(b)) => {
                 a.len() == b.len()
                     && a.iter()
                         .zip(b)
-                        .all(|(x, y)| x.name == y.name && x.state == y.state)
+                        .all(|(x, y)| x.name == y.name && class(x.state) == class(y.state))
             }
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
@@ -221,8 +227,8 @@ fn unwell(sources: Option<&Value>) -> Vec<Link> {
         .filter_map(|s| {
             let state = match s.get("status").and_then(Value::as_str)? {
                 "error" => "down",
-                // After an error this is the link coming back, not going: the
-                // bridge answered, and the first line hasn't come yet.
+                // The link starting, or just reached, with nothing heard yet.
+                // Not "down", which it may not be; not up, which it isn't yet.
                 "connecting" => "connecting",
                 "quiet" => "quiet",
                 "ended" => "ended",
