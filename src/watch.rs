@@ -10,7 +10,11 @@ use crate::{
     entry, geo, git, keel, lock, time,
     track::{Point, Track},
 };
-use std::{io, path::PathBuf};
+use std::{
+    collections::{HashMap, VecDeque},
+    io,
+    path::PathBuf,
+};
 
 /// A gap longer than this is the log having been stopped, or the receiver
 /// having been off: it does not count as time under way.
@@ -34,6 +38,13 @@ const SETTLE_SECS: i64 = 3;
 /// can't make up its mind would otherwise write a line every few seconds.
 const MAX_REASONS: u8 = 4;
 
+/// A source counts as idle anyway — no reason for a lost fix — if it wasn't
+/// delivering at some point in this window before the last good fix. The
+/// last few seconds are left out on purpose: when the GPS's own link breaks,
+/// omakeel marks it down a few seconds before the fix goes stale, and that
+/// link is the cause, not a bystander.
+const IDLE_WINDOW: std::ops::RangeInclusive<i64> = 10..=600;
+
 /// A fix that has gone missing, from the moment it went.
 struct Outage {
     /// When the watch saw it go.
@@ -49,6 +60,8 @@ struct Outage {
     written: bool,
     /// How many times the reason has changed since.
     changed: u8,
+    /// Sources that were idle before the fix went, and so aren't its cause.
+    idle: Vec<String>,
 }
 
 pub struct Watch {
@@ -78,8 +91,9 @@ pub struct Watch {
     last_save: i64,
     /// The fix being lost, while it is.
     outage: Option<Outage>,
-    /// Sources that weren't delivering while the fix was good.
-    idle: Vec<String>,
+    /// When each source was seen not delivering while the fix was good,
+    /// over the last `IDLE_WINDOW`.
+    unwell: HashMap<String, VecDeque<i64>>,
     /// Satellites and HDOP of the last current fix, to say how good the fix
     /// was just before it went.
     quality: (Option<u32>, Option<f64>),
@@ -106,7 +120,7 @@ impl Watch {
             last_fix: 0,
             last_save: 0,
             outage: None,
-            idle: Vec::new(),
+            unwell: HashMap::new(),
             quality: (None, None),
         })
     }
@@ -114,8 +128,8 @@ impl Watch {
     /// One update from omakeel. Returns what it wrote, for the terminal.
     pub fn update(&mut self, update: keel::Update, now: i64) -> io::Result<Vec<String>> {
         match update {
-            keel::Update::Fix(fix, idle) => {
-                self.idle = idle;
+            keel::Update::Fix(fix, unwell) => {
+                self.remember_unwell(unwell, now);
                 self.moved(fix, now)
             }
             keel::Update::NoFix(why) => self.lost(why, now),
@@ -328,10 +342,12 @@ impl Watch {
     /// reason changes, because the crew reads this back at the marina to
     /// find out which part of the chain let go.
     fn no_fix(&mut self, why: keel::Why, now: i64) -> io::Result<Vec<String>> {
-        let why = why.without(&self.idle);
         if self.has_fix {
             self.has_fix = false;
+            let idle = self.idle_before(self.last_fix);
+            let why = why.without(&idle);
             self.outage = Some(Outage {
+                idle,
                 since: now,
                 said: why.clone(),
                 from: self.last_fix,
@@ -345,7 +361,7 @@ impl Watch {
         let Some(outage) = self.outage.as_mut() else {
             return Ok(Vec::new());
         };
-        outage.why = why;
+        outage.why = why.without(&outage.idle);
         if !outage.written {
             if now - outage.since < SETTLE_SECS {
                 return Ok(Vec::new());
@@ -364,6 +380,30 @@ impl Watch {
         outage.said = outage.why.clone();
         let line = format!("still no fix: {}", outage.why.say());
         self.say(now, line)
+    }
+
+    fn remember_unwell(&mut self, unwell: Vec<String>, now: i64) {
+        for name in unwell.into_iter().take(32) {
+            self.unwell.entry(name).or_default().push_back(now);
+        }
+        let oldest = now - IDLE_WINDOW.end();
+        self.unwell.retain(|_, seen| {
+            while seen.front().is_some_and(|t| *t < oldest) {
+                seen.pop_front();
+            }
+            !seen.is_empty()
+        });
+    }
+
+    /// The sources seen not delivering in the window before `last`, the
+    /// last good fix.
+    fn idle_before(&self, last: i64) -> Vec<String> {
+        let window = last - IDLE_WINDOW.end()..=last - IDLE_WINDOW.start();
+        self.unwell
+            .iter()
+            .filter(|(_, seen)| seen.iter().any(|t| window.contains(t)))
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     /// The "no fix" line for the outage under way, once.
@@ -1012,65 +1052,107 @@ mod tests {
         assert_eq!(gone_for(-3), "0 s");
     }
 
-    fn source(name: &str, state: &'static str) -> keel::Link {
-        keel::Link {
-            name: name.into(),
-            state,
-            message: None,
-        }
+    /// A state line from omakeel, as `keel::read` sees it.
+    fn state(status: &str, at: i64, sources: &[(&str, &str)]) -> keel::Update {
+        let utc = time::iso_utc(at);
+        let sources: Vec<String> = sources
+            .iter()
+            .map(|(name, status)| {
+                format!(r#"{{"name":"{name}","status":"{status}","message":"Connection reset by peer"}}"#)
+            })
+            .collect();
+        let line = format!(
+            r#"{{"type":"state","v":1,"fix":{{"status":"{status}","lat":37.8663,"lon":-122.3148,"sogKn":5.0,"cogDeg":245.0,"utc":"{utc}","satellites":9,"hdop":0.9}},"sources":[{}]}}"#,
+            sources.join(",")
+        );
+        keel::read(&line).expect("a state")
     }
 
-    /// An AIS receiver on an empty bay goes quiet and back all day. It was
-    /// quiet while the fix was good, so it is no reason for the fix to go,
-    /// and its comings and goings don't spend the outage's lines.
+    const GPS: &str = "tcp:gps:10110";
+    const AIS: &str = "serial:/dev/ais:38400";
+
+    /// An AIS receiver on an empty bay goes quiet and back all day. It
+    /// wasn't delivering before the fix went, so it is no reason for the fix
+    /// to go, and its comings and goings don't spend the outage's lines —
+    /// even when it happened to be delivering at the last good fix.
     #[test]
     fn an_idle_ais_receiver_is_not_blamed() {
         let mut watch = Watch::new(settings("ais")).unwrap();
         let t = 1_789_300_800;
-        let ais = "serial:/dev/ais:38400";
-        let good = |at: i64| {
-            keel::Update::Fix(
-                keel::Fix {
-                    lat: 37.8663,
-                    lon: -122.3148,
-                    sog_kn: Some(5.0),
-                    cog_deg: Some(245.0),
-                    utc: Some(at),
-                    satellites: Some(9),
-                    hdop: Some(0.9),
-                },
-                vec![ais.to_string()],
-            )
-        };
-        watch.update(good(t), t).unwrap();
-        for second in 1..=40 {
-            let mut links = vec![source("tcp:gps:10110", "down")];
-            if second % 7 < 3 {
-                links.push(source(ais, "quiet"));
-            }
-            watch
-                .update(keel::Update::NoFix(keel::Why::Links(links)), t + second)
-                .unwrap();
+        let ais = |second: i64| if second % 7 < 3 { "quiet" } else { "ok" };
+        for second in 0..60 {
+            let at = t + second;
+            let update = state("ok", at, &[(GPS, "ok"), (AIS, ais(second))]);
+            watch.update(update, at).unwrap();
+        }
+        assert_eq!(ais(59), "ok", "the AIS was delivering at the last fix");
+        for second in 60..100 {
+            let at = t + second;
+            let update = state("stale", at, &[(GPS, "error"), (AIS, ais(second))]);
+            watch.update(update, at).unwrap();
         }
         let text = fs::read_to_string(watch.day_path()).unwrap();
-        assert!(text.contains("no fix: tcp:gps:10110 is down ·"), "{text}");
-        assert!(!text.contains(ais), "{text}");
+        assert!(text.contains("no fix: tcp:gps:10110 is down"), "{text}");
+        assert!(!text.contains(AIS), "{text}");
         assert!(!text.contains("still no fix"), "{text}");
+    }
 
-        // The GPS talking but sending no position, with the AIS quiet beside
-        // it, is the receiver's doing, not the AIS's.
-        watch.update(good(t + 50), t + 50).unwrap();
-        for second in 51..=55 {
+    /// The GPS talking but sending no position, with the AIS quiet beside
+    /// it, is the receiver's doing, not the AIS's.
+    #[test]
+    fn a_quiet_ais_is_not_blamed_for_a_silent_gps() {
+        let mut watch = Watch::new(settings("silent")).unwrap();
+        let t = 1_789_300_800;
+        for second in 0..60 {
+            let at = t + second;
             watch
-                .update(
-                    keel::Update::NoFix(keel::Why::Links(vec![source(ais, "quiet")])),
-                    t + second,
-                )
+                .update(state("ok", at, &[(GPS, "ok"), (AIS, "quiet")]), at)
+                .unwrap();
+        }
+        for second in 60..70 {
+            let at = t + second;
+            watch
+                .update(state("stale", at, &[(GPS, "ok"), (AIS, "quiet")]), at)
                 .unwrap();
         }
         let text = fs::read_to_string(watch.day_path()).unwrap();
         assert!(
             text.contains("no fix: the receiver is talking but sends no position"),
+            "{text}"
+        );
+    }
+
+    /// The GPS's own link breaking: omakeel marks it down while the fix is
+    /// still a few seconds from stale. That link is the cause, and the log
+    /// has to say so.
+    #[test]
+    fn a_broken_gps_link_is_named_though_it_broke_before_the_fix_went() {
+        let mut watch = Watch::new(settings("race")).unwrap();
+        let t = 1_789_300_800;
+        for second in 0..5 {
+            let at = t + second;
+            watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+        }
+        for second in 5..9 {
+            let at = t + second;
+            watch
+                .update(state("ok", at, &[(GPS, "error")]), at)
+                .unwrap();
+        }
+        for second in 9..20 {
+            let at = t + second;
+            let link = if second % 2 == 0 {
+                "error"
+            } else {
+                "connecting"
+            };
+            watch
+                .update(state("stale", at, &[(GPS, link)]), at)
+                .unwrap();
+        }
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(
+            text.contains("no fix: tcp:gps:10110 is down (Connection reset by peer)"),
             "{text}"
         );
     }
