@@ -11,13 +11,16 @@
 use crate::geo;
 use serde_json::Value;
 use std::{
-    io::Read,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// omawind's longest line, a whole forecast field, is well under this.
-const MAX_LINE: u64 = 4 << 20;
+const MAX_LINE: usize = 4 << 20;
+
+/// A tendency older than this is left out: it is about some other three
+/// hours.
+const BAROMETER_MAX_AGE_MINUTES: i64 = 180;
 
 /// A station further off than this measured somewhere else's wind.
 const NEAR_NM: f64 = 10.0;
@@ -52,8 +55,11 @@ pub struct Barometer {
     pub name: String,
     pub nm: f64,
     pub pressure_hpa: Option<f64>,
-    /// Hectopascals gained (positive) or lost over the last three hours.
+    /// Hectopascals gained (positive) or lost over the three hours up to
+    /// its report.
     pub tendency_hpa: f64,
+    /// Minutes since that report, when its time could be read.
+    pub age_minutes: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -93,19 +99,45 @@ fn speed(v: &Value, key: &str) -> Option<f64> {
     number(v, key).filter(|k| (0.0..=300.0).contains(k))
 }
 
+/// NDBC's name for a station when it has one, else its id, cleaned for a
+/// log line. None when neither leaves anything to write.
+fn station_name(s: &Value) -> Option<String> {
+    ["name", "id"]
+        .iter()
+        .filter_map(|key| s.get(key).and_then(Value::as_str))
+        .find_map(crate::wire::label)
+}
+
+/// Minutes since a station's report was taken, when its time can be read.
+fn age_minutes(s: &Value, now: i64) -> Option<i64> {
+    s.get("time")
+        .and_then(Value::as_str)
+        .and_then(crate::time::parse_utc)
+        .map(|t| (now - t).max(0) / 60)
+}
+
 /// A station's barometer, when it reports a tendency. A pressure with no
 /// tendency says less than HRRR's already does, so it isn't worth a line.
-fn barometer(s: &Value, nm: f64) -> Option<Barometer> {
+fn barometer(s: &Value, nm: f64, now: i64) -> Option<Barometer> {
     // A real three-hour change past 20 hPa is a hurricane arriving; anything
     // beyond it is a bad report.
     let tendency_hpa = number(s, "tendencyHpa").filter(|t| t.abs() <= 20.0)?;
-    let id = s.get("id").and_then(Value::as_str).unwrap_or("");
-    let name = s.get("name").and_then(Value::as_str).unwrap_or(id);
-    if name.is_empty() {
+    // A tendency is the three hours up to the report it came with. NDBC only
+    // sends one on the hour, so omawind keeps it with its own time; without
+    // that, the station's report time is the best there is. Older than three
+    // hours, it describes a different afternoon.
+    let age = s
+        .get("tendencyTime")
+        .and_then(Value::as_str)
+        .and_then(crate::time::parse_utc)
+        .map(|t| (now - t).max(0) / 60)
+        .or_else(|| age_minutes(s, now));
+    if age.is_some_and(|m| m > BAROMETER_MAX_AGE_MINUTES) {
         return None;
     }
     Some(Barometer {
-        name: name.to_string(),
+        name: station_name(s)?,
+        age_minutes: age,
         nm,
         pressure_hpa: number(s, "pressureHpa").filter(|p| (800.0..=1100.0).contains(p)),
         tendency_hpa,
@@ -154,7 +186,7 @@ fn read(line: &str, at: (f64, f64), now: i64) -> Option<Weather> {
                 // The nearest barometer is chosen on its own: the nearest
                 // anemometer often has none.
                 if barometer.as_ref().is_none_or(|b| nm < b.nm)
-                    && let Some(b) = self::barometer(s, nm)
+                    && let Some(b) = self::barometer(s, nm, now)
                 {
                     barometer = Some(b);
                 }
@@ -164,19 +196,13 @@ fn read(line: &str, at: (f64, f64), now: i64) -> Option<Weather> {
                 let Some(speed_kn) = speed(s, "speedKn") else {
                     continue;
                 };
-                let id = s.get("id").and_then(Value::as_str).unwrap_or("");
-                let name = s.get("name").and_then(Value::as_str).unwrap_or(id);
-                if name.is_empty() {
+                let Some(name) = station_name(s) else {
                     continue;
-                }
+                };
                 best = Some(Measured {
-                    name: name.to_string(),
+                    name,
                     nm,
-                    age_minutes: s
-                        .get("time")
-                        .and_then(Value::as_str)
-                        .and_then(crate::time::parse_utc)
-                        .map(|t| (now - t).max(0) / 60),
+                    age_minutes: age_minutes(s, now),
                     speed_kn,
                     dir_deg: direction(s, "dirDeg"),
                     gust_kn: speed(s, "gustKn"),
@@ -199,37 +225,20 @@ fn read(line: &str, at: (f64, f64), now: i64) -> Option<Weather> {
 /// version gives no weather at all, and the mark is filed without it.
 pub fn once(socket: &Path, at: (f64, f64), now: i64, wait: Duration) -> Weather {
     let mut weather = Weather::default();
-    let Ok(stream) = std::os::unix::net::UnixStream::connect(socket) else {
-        return weather;
-    };
-    if stream.set_read_timeout(Some(wait)).is_err() {
-        return weather;
-    }
-    let deadline = Instant::now() + wait;
-    let mut reader = std::io::BufReader::new(stream.take(MAX_LINE));
-    let mut line = String::new();
-    while Instant::now() < deadline {
-        line.clear();
-        match std::io::BufRead::read_line(&mut reader, &mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                if let Some(w) = read(line.trim_end(), at, now) {
-                    if w.forecast.is_some() {
-                        weather.forecast = w.forecast;
-                    }
-                    if w.measured.is_some() {
-                        weather.measured = w.measured;
-                    }
-                    if w.barometer.is_some() {
-                        weather.barometer = w.barometer;
-                    }
-                    if weather.forecast.is_some() && weather.measured.is_some() {
-                        break;
-                    }
-                }
+    crate::wire::read_lines(socket, wait, MAX_LINE, |line| {
+        if let Some(w) = read(line, at, now) {
+            if w.forecast.is_some() {
+                weather.forecast = w.forecast;
+            }
+            if w.measured.is_some() {
+                weather.measured = w.measured;
+            }
+            if w.barometer.is_some() {
+                weather.barometer = w.barometer;
             }
         }
-    }
+        weather.forecast.is_some() && weather.measured.is_some()
+    });
     weather
 }
 
@@ -353,6 +362,74 @@ mod tests {
         let w = read(line, BOAT, NOON).expect("stations");
         assert_eq!(w.measured, None);
         assert_eq!(w.barometer.expect("a barometer").pressure_hpa, None);
+    }
+
+    /// A tendency is about the three hours before its report; one more than
+    /// three hours old is about some other afternoon. Its own time wins over
+    /// the station's, and one with no time at all can't be judged, and
+    /// stands.
+    #[test]
+    fn an_old_tendency_is_left_out() {
+        let at = |times: &str| {
+            format!(
+                r#"{{"type":"stations","v":1,"stations":[{{"id":"AAMC1","name":"Alameda","lat":37.772,"lon":-122.3,"tendencyHpa":-1.2{times}}}]}}"#
+            )
+        };
+        let age = |times: &str| {
+            read(&at(times), BOAT, NOON)
+                .and_then(|w| w.barometer)
+                .map(|b| b.age_minutes)
+        };
+        assert_eq!(age(r#","tendencyTime":"2026-09-13T08:30:00Z""#), None);
+        assert_eq!(age(r#","time":"2026-09-13T08:30:00Z""#), None);
+        assert_eq!(
+            age(r#","time":"2026-09-13T11:54:00Z","tendencyTime":"2026-09-13T10:40:00Z""#),
+            Some(Some(80))
+        );
+        assert_eq!(
+            age(r#","time":"2026-09-13T08:00:00Z","tendencyTime":"2026-09-13T11:00:00Z""#),
+            Some(Some(60))
+        );
+        assert_eq!(age(""), Some(None));
+    }
+
+    /// Station names go into a log line: control characters out, length cut,
+    /// the id when the name is empty.
+    #[test]
+    fn station_names_are_cleaned() {
+        let line = format!(
+            r#"{{"type":"stations","v":1,"stations":[{{"id":"AAMC1","name":"Ala\u001bmeda{}","lat":37.772,"lon":-122.3,"speedKn":2.9,"tendencyHpa":0.3}}]}}"#,
+            "x".repeat(100)
+        );
+        let w = read(&line, BOAT, NOON).expect("stations");
+        let m = w.measured.expect("wind");
+        assert!(m.name.starts_with("Alameda"), "{}", m.name);
+        assert_eq!(m.name.chars().count(), 60);
+        assert_eq!(w.barometer.expect("barometer").name, m.name);
+        let blank = r#"{"type":"stations","v":1,"stations":[{"id":"AAMC1","name":"  ","lat":37.772,"lon":-122.3,"speedKn":2.9}]}"#;
+        assert_eq!(
+            read(blank, BOAT, NOON)
+                .expect("stations")
+                .measured
+                .expect("wind")
+                .name,
+            "AAMC1"
+        );
+    }
+
+    /// An engine dribbling a byte at a time must not hold the mark past its
+    /// wait.
+    #[test]
+    fn a_trickling_engine_is_given_up_on() {
+        let path = crate::wire::trickle("wind", b"{\"type\":", Duration::from_millis(100));
+        let start = std::time::Instant::now();
+        let w = once(&path, BOAT, NOON, Duration::from_millis(400));
+        assert!(w.is_empty());
+        assert!(
+            start.elapsed() < Duration::from_millis(900),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

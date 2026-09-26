@@ -67,6 +67,18 @@ pub fn sunset(date: &str, lat: f64, lon: f64) -> Option<i64> {
     Some((midnight + minutes * 60.0).round() as i64)
 }
 
+/// `sunset 19:07`, for leaving the berth at `now`. Nothing once the sun has
+/// already set: a sunset behind you is no help planning the sail ahead.
+pub fn ahead(lat: f64, lon: f64, now: i64) -> Option<String> {
+    ahead_on(&time::local(now).date(), lat, lon, now)
+}
+
+/// [`ahead`] on a given local date.
+fn ahead_on(date: &str, lat: f64, lon: f64, now: i64) -> Option<String> {
+    let set = sunset(date, lat, lon)?;
+    (set > now).then(|| format!("sunset {}", time::local(set).clock()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +104,20 @@ mod tests {
             let got = sunset(date, MARINA.0, MARINA.1).expect("the sun sets");
             assert!((got - want).abs() <= 60, "{date}: {got} vs {want}");
         }
+    }
+
+    /// Before the sun sets its time is written; after, nothing is.
+    #[test]
+    fn only_a_sunset_still_ahead_is_written() {
+        let (date, set) = REFERENCE[3]; // 2026-09-21
+        let words = ahead_on(date, MARINA.0, MARINA.1, set - 3 * 3600);
+        // The clock depends on this machine's zone; that it says one is
+        // the point.
+        assert!(
+            words.as_deref().is_some_and(|w| w.starts_with("sunset ")),
+            "{words:?}"
+        );
+        assert_eq!(ahead_on(date, MARINA.0, MARINA.1, set + 600), None);
     }
 
     /// Tromsø in June: the midnight sun has no sunset to give.

@@ -85,16 +85,18 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
   | --- | --- |
   | Time, local and UTC; position, course and speed | omakeel |
   | `wind … (HRRR)` and its hPa | [omawind](https://github.com/shieldsworks/omawind)'s forecast at the boat |
-  | `barometer …, falling 1.2 in 3 h` | the nearest NDBC station within 10 nm reporting a three-hour tendency, via omawind |
+  | `barometer …, falling 1.2 in 3 h` | the nearest NDBC station within 10 nm reporting a three-hour tendency, via omawind; NDBC sends one on the hour, so past an hour old it says how old, and past three hours it is left off |
   | `measured …` | the nearest NDBC anemometer within 10 nm, via omawind |
   | `tide …` and the stream | [omatide](https://github.com/shieldsworks/omatide)'s predictions at the nearest tide and current station within 10 nm |
 
   And two marks say one thing more:
 
   - `/depart` adds the **sunset** at the boat, worked out here (NOAA's solar
-    equations, checked to the minute against an independent implementation).
+    equations, checked to the minute against an independent implementation),
+    and leaves it off once the sun has already set.
   - `/berth` closes the **trip** since the last `/depart` — up to a month
-    back — from the notes and GPX tracks on disk:
+    back, and only if the boat hasn't been berthed or moored since — from the
+    notes and GPX tracks on disk:
 
     ```markdown
     — Berthed · trip 20.1 nm in 4 h 25 min (2.4 inferred) · under way 4 h 24 min
@@ -106,7 +108,9 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
     apart as inferred. A hole counts as time under way when the boat came out
     of it somewhere else, at under-way speed. Top speed is the fastest track
     point, which is every ten seconds, so it can read a little under the
-    day's `fastest`. `sail` and `motor` add up the time from each `/sail` and
+    day's `fastest`. The average is over the miles whose time counted as
+    under way, so a slow drift through a long dropout can't inflate it.
+    `sail` and `motor` add up the time from each `/sail` and
     `/motor` to the next mark that changes how the boat is moving; they are
     left off when you marked neither. A struck entry counts for nothing.
 

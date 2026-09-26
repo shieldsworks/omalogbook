@@ -8,14 +8,13 @@
 
 use serde_json::Value;
 use std::{
-    io::Read,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// omatide's `state` carries three days of turns and the bay's narrows; this
 /// is far more than that.
-const MAX_LINE: u64 = 1 << 20;
+const MAX_LINE: usize = 1 << 20;
 
 /// A station further off than this is somewhere else's water. omatide itself
 /// looks out to 60 nm, which is right for a chart and wrong for a log.
@@ -70,14 +69,10 @@ fn number(v: &Value, key: &str) -> Option<f64> {
 /// The station's name, or nothing: a reading from an unnamed station can't
 /// be checked later, so it isn't written down.
 fn name(v: &Value) -> Option<String> {
-    let name = v
-        .get("name")
-        .and_then(Value::as_str)
-        .or_else(|| v.get("station").and_then(Value::as_str))?
-        .trim();
-    // A name is a label in a log line, not a place for markup or a novel.
-    let name: String = name.chars().filter(|c| !c.is_control()).take(60).collect();
-    (!name.is_empty()).then_some(name)
+    ["name", "station"]
+        .iter()
+        .filter_map(|key| v.get(key).and_then(Value::as_str))
+        .find_map(crate::wire::label)
 }
 
 /// How far off the station is, when that is near enough to count.
@@ -128,28 +123,15 @@ fn read(line: &str) -> Option<Tide> {
 /// the greeting is enough. An engine that is down, silent, or answering for
 /// its home position gives nothing, and the mark is filed without it.
 pub fn once(socket: &Path, wait: Duration) -> Tide {
-    let Ok(stream) = std::os::unix::net::UnixStream::connect(socket) else {
-        return Tide::default();
-    };
-    if stream.set_read_timeout(Some(wait)).is_err() {
-        return Tide::default();
-    }
-    let deadline = Instant::now() + wait;
-    let mut reader = std::io::BufReader::new(stream.take(MAX_LINE * 4));
-    let mut line = String::new();
-    while Instant::now() < deadline {
-        line.clear();
-        match std::io::BufRead::read_line(&mut reader, &mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) if line.len() as u64 > MAX_LINE => break,
-            Ok(_) => {
-                if let Some(t) = read(line.trim_end()) {
-                    return t;
-                }
-            }
+    let mut tide = Tide::default();
+    crate::wire::read_lines(socket, wait, MAX_LINE, |line| match read(line) {
+        Some(t) => {
+            tide = t;
+            true
         }
-    }
-    Tide::default()
+        None => false,
+    });
+    tide
 }
 
 /// ` · tide 1.37 m falling (Berkeley, 0.4 nm) · ebb 1.4 kn toward 294°
@@ -273,6 +255,29 @@ mod tests {
         ] {
             assert_eq!(read(line), None, "{line}");
         }
+    }
+
+    /// An engine dribbling a byte at a time must not hold the mark past its
+    /// wait.
+    #[test]
+    fn a_trickling_engine_is_given_up_on() {
+        let path = crate::wire::trickle("tide", b"{\"type\":", Duration::from_millis(100));
+        let start = std::time::Instant::now();
+        assert!(once(&path, Duration::from_millis(400)).is_empty());
+        assert!(
+            start.elapsed() < Duration::from_millis(900),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_names_control_characters_are_dropped() {
+        let line = one_line(STATE).replace(r#""name":"Berkeley""#, r#""name":"Berk\u0007eley""#);
+        assert_eq!(
+            read(&line).expect("a state").water.expect("water").name,
+            "Berkeley"
+        );
     }
 
     #[test]

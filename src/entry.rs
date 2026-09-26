@@ -107,8 +107,14 @@ pub fn mark(
 }
 
 /// `barometer 1013.8 hPa, falling 1.2 in 3 h (Alameda)`. A change that
-/// rounds to nothing is steady, which is worth saying too.
+/// rounds to nothing is steady, which is worth saying too. NDBC gives a
+/// tendency only on the hour, so one past an hour old says how old:
+/// `(Alameda, 1 h 20 min ago)`.
 fn barometer(b: &crate::wind::Barometer) -> String {
+    let age = match b.age_minutes {
+        Some(m) if m > 60 => format!(", {} ago", crate::day::hours(m * 60)),
+        _ => String::new(),
+    };
     let reading = b
         .pressure_hpa
         .map(|p| format!(" {p:.1} hPa,"))
@@ -126,7 +132,7 @@ fn barometer(b: &crate::wind::Barometer) -> String {
             b.tendency_hpa.abs()
         )
     };
-    format!("barometer{reading} {change} ({})", b.name)
+    format!("barometer{reading} {change} ({}{age})", b.name)
 }
 
 /// `13 kn from 262°, gusting 18`. A calm has no direction to give, and a
@@ -209,6 +215,7 @@ mod tests {
             nm: 6.4,
             pressure_hpa: Some(1013.8),
             tendency_hpa: -1.2,
+            age_minutes: Some(40),
         });
         let tide = crate::tide::Tide {
             water: Some(crate::tide::Water {
@@ -255,16 +262,28 @@ mod tests {
             nm: 6.4,
             pressure_hpa: None,
             tendency_hpa: 0.0,
+            age_minutes: None,
         };
         assert_eq!(barometer(&b), "barometer steady over 3 h (Alameda)");
         let up = crate::wind::Barometer {
             tendency_hpa: 2.04,
             pressure_hpa: Some(1020.0),
-            ..b
+            age_minutes: Some(60),
+            ..b.clone()
         };
         assert_eq!(
             barometer(&up),
             "barometer 1020.0 hPa, rising 2.0 in 3 h (Alameda)"
+        );
+        // Past the hour, the tendency says how old it is.
+        let old = crate::wind::Barometer {
+            tendency_hpa: -1.2,
+            age_minutes: Some(80),
+            ..b
+        };
+        assert_eq!(
+            barometer(&old),
+            "barometer falling 1.2 in 3 h (Alameda, 1 h 20 min ago)"
         );
     }
 

@@ -21,3 +21,4 @@ pub mod track;
 pub mod trip;
 pub mod watch;
 pub mod wind;
+pub mod wire;

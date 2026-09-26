@@ -201,12 +201,8 @@ fn note(args: &[&str]) -> ExitCode {
         match p.word {
             // Leaving the berth: how much daylight there is to sail in.
             "depart" => {
-                if let Some(fix) = here
-                    && let Some(set) = sun::sunset(&date, fix.lat, fix.lon)
-                {
-                    around
-                        .extras
-                        .push(format!("sunset {}", time::local(set).clock()));
+                if let Some(words) = here.and_then(|fix| sun::ahead(fix.lat, fix.lon, now)) {
+                    around.extras.push(words);
                 }
             }
             // Back alongside: the trip since the last `/depart`, from what

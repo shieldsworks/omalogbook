@@ -49,6 +49,9 @@ struct Point {
 /// The labels a trip is built from, as the presets write them.
 const DEPARTED: &str = "Departed";
 const UNDER: [(&str, Leg); 2] = [("Sailing", Leg::Sail), ("Motoring", Leg::Motor)];
+/// Marks that end a trip. Found before a `Departed`, looking back, they
+/// mean there is no trip open to sum up.
+const ENDED: [&str; 2] = ["Berthed", "Moored"];
 /// Marks that end a leg under sail or engine without starting another.
 const STILL: [&str; 3] = ["Anchor down", "Moored", "Berthed"];
 
@@ -70,7 +73,9 @@ pub fn summary(vault: &Path, now: i64, underway_kn: f64) -> Vec<String> {
 }
 
 /// The latest `Departed` mark and every mark after it up to `now`, oldest
-/// first. Empty when there is no departure in the last month.
+/// first. Empty when there is no departure in the last month, or when the
+/// boat was already berthed or moored since the last one: that trip is
+/// over, and this one never had its `/depart`.
 fn marks_since_departure(vault: &Path, now: i64) -> Vec<Mark> {
     let mut later: Vec<Mark> = Vec::new();
     let today = time::local(now).date();
@@ -84,6 +89,9 @@ fn marks_since_departure(vault: &Path, now: i64) -> Vec<Mark> {
         // Newest first, so the first `Departed` found is the latest.
         marks.sort_by_key(|m| std::cmp::Reverse(m.epoch));
         for m in marks {
+            if ENDED.contains(&m.label.as_str()) {
+                return Vec::new();
+            }
             let departed = m.label == DEPARTED;
             later.push(m);
             if departed {
@@ -260,6 +268,7 @@ fn words(depart: i64, now: i64, marks: &[Mark], points: &[Point], underway_kn: f
     let mut track_nm = 0.0;
     let mut inferred_nm = 0.0;
     let mut underway_secs = 0;
+    let mut underway_inferred_nm = 0.0;
     for w in points.windows(2) {
         let (a, b) = (w[0], w[1]);
         let secs = b.epoch - a.epoch;
@@ -277,10 +286,15 @@ fn words(depart: i64, now: i64, marks: &[Mark], points: &[Point], underway_kn: f
             inferred_nm += nm;
             if nm / (secs as f64 / 3600.0) >= underway_kn {
                 underway_secs += secs;
+                underway_inferred_nm += nm;
             }
         }
     }
     let total_nm = track_nm + inferred_nm;
+    // The average is miles over the time they took. A hole that didn't
+    // count as time under way can't lend the average its miles either, or
+    // a slow drift across a long dropout reads as a sprint.
+    let timed_nm = track_nm + underway_inferred_nm;
     let mut out = Vec::new();
     let elapsed = day::hours((now - depart).max(0));
     if points.len() >= 2 {
@@ -294,7 +308,7 @@ fn words(depart: i64, now: i64, marks: &[Mark], points: &[Point], underway_kn: f
             out.push(format!("under way {}", day::hours(underway_secs)));
             out.push(format!(
                 "avg {:.1} kn",
-                total_nm / (underway_secs as f64 / 3600.0)
+                timed_nm / (underway_secs as f64 / 3600.0)
             ));
         }
     } else {
@@ -502,6 +516,73 @@ mod tests {
         d.revise(1, &second, &day::Revision::Strike).unwrap();
         let marks = marks_since_departure(&v, START + 3600);
         assert_eq!(marks.first().map(|m| m.epoch), Some(START), "{marks:?}");
+    }
+
+    /// Yesterday's trip ended alongside; today the crew sailed without a
+    /// `/depart` and typed `/berth`. Summing back to yesterday's departure
+    /// would be a 26-hour trip that never happened.
+    #[test]
+    fn a_trip_already_berthed_is_not_summed_again() {
+        let v = vault("reberth");
+        note(
+            &v,
+            START,
+            &[
+                mark_line(START, "Departed"),
+                mark_line(START + 3600, "Berthed"),
+            ],
+        );
+        let tomorrow = START + 86_400;
+        note(&v, tomorrow, &[mark_line(tomorrow, "Sailing")]);
+        track(&v, tomorrow, 3600, 37.8663, 5.0);
+        assert!(summary(&v, tomorrow + 3600, 1.0).is_empty());
+
+        // A mooring ends a trip just the same.
+        let v = vault("moored");
+        note(
+            &v,
+            START,
+            &[
+                mark_line(START, "Departed"),
+                mark_line(START + 3600, "Moored"),
+            ],
+        );
+        assert!(summary(&v, START + 7200, 1.0).is_empty());
+    }
+
+    /// An hour sailing at 5 kn, then three hours of dropout that drifted
+    /// half a mile: the drift isn't time under way, so it can't lend the
+    /// average its miles either.
+    #[test]
+    fn the_average_only_counts_miles_whose_time_counted() {
+        let a = Point {
+            epoch: 0,
+            lat: 37.0,
+            lon: -122.0,
+            sog_kn: Some(5.0),
+        };
+        let b = Point {
+            epoch: 3600,
+            lat: 37.0 + 5.0 / 60.0,
+            ..a
+        };
+        // The hour as ten-second points, so it is track, not a hole.
+        let mut points: Vec<Point> = (0..=360)
+            .map(|i| Point {
+                epoch: i * 10,
+                lat: a.lat + (b.lat - a.lat) * i as f64 / 360.0,
+                ..a
+            })
+            .collect();
+        points.push(Point {
+            epoch: 3600 + 3 * 3600,
+            lat: b.lat + 0.5 / 60.0,
+            ..a
+        });
+        let parts = words(0, 4 * 3600, &[], &points, 1.0);
+        assert_eq!(parts[0], "trip 5.5 nm in 4 h 00 min (0.5 inferred)");
+        assert_eq!(parts[1], "under way 1 h 00 min");
+        assert_eq!(parts[2], "avg 5.0 kn");
     }
 
     #[test]
