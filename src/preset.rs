@@ -24,7 +24,7 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         word: "depart",
         label: "Departed",
-        about: "left the berth",
+        about: "left the berth; notes the sunset and starts the trip",
     },
     Preset {
         word: "sail",
@@ -64,7 +64,7 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         word: "berth",
         label: "Berthed",
-        about: "tied up alongside",
+        about: "tied up alongside; sums up the trip since /depart",
     },
     Preset {
         word: "watch",

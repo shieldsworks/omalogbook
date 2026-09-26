@@ -38,10 +38,23 @@ pub fn event(at: Local, utc: Local, text: &str) -> String {
     format!("- **{}**{} — {text}", at.clock(), utc_suffix(at, utc))
 }
 
+/// What was going on around the boat when a mark was made, gathered from
+/// whichever engines are running. Any part may be missing.
+#[derive(Clone, Debug, Default)]
+pub struct Around {
+    pub weather: crate::wind::Weather,
+    pub tide: crate::tide::Tide,
+    /// What only this mark says, already worded: the sunset on `/depart`,
+    /// the trip's figures on `/berth`. They follow the crew's words.
+    pub extras: Vec<String>,
+}
+
 /// A mark: what the crew said happened, where, and what it was blowing.
 /// `- **14:32** (21:32 UTC) · 37°52.0′N 122°18.9′W · 245° · 5.1 kn — Departed
-///  · wind 13 kn from 262°, gusting 18 (HRRR) · 1014.5 hPa · measured 11 kn
-///  from 250° (Alameda, 12 min)`
+///  · sunset 19:05 · wind 13 kn from 262°, gusting 18 (HRRR) · 1014.5 hPa
+///  · barometer 1013.8 hPa, falling 1.2 in 3 h (Alameda) · measured 11 kn
+///  from 250° (Alameda, 12 min) · tide 1.37 m falling (Berkeley, 0.4 nm)
+///  · ebb 1.4 kn toward 294° (Emeryville Marina, 1.5 nm)`
 ///
 /// Course and speed belong here, unlike on a note: a mark is an event in the
 /// day's run, and reads beside `under way` and `stopped`.
@@ -51,7 +64,7 @@ pub fn mark(
     fix: Option<(f64, f64, Option<f64>, Option<f64>)>,
     label: &str,
     said: &str,
-    weather: &crate::wind::Weather,
+    around: &Around,
 ) -> String {
     let mut what = label.to_string();
     if !said.trim().is_empty() {
@@ -62,6 +75,10 @@ pub fn mark(
         Some((lat, lon, sog, cog)) => self::fix(at, utc, lat, lon, sog, cog, &what),
         None => event(at, utc, &what),
     };
+    for extra in &around.extras {
+        line.push_str(&format!(" · {extra}"));
+    }
+    let weather = &around.weather;
     if let Some(f) = weather.forecast {
         line.push_str(&format!(
             " · wind {} (HRRR)",
@@ -70,6 +87,9 @@ pub fn mark(
         if let Some(hpa) = f.pressure_hpa {
             line.push_str(&format!(" · {hpa:.1} hPa"));
         }
+    }
+    if let Some(b) = &weather.barometer {
+        line.push_str(&format!(" · {}", barometer(b)));
     }
     if let Some(m) = &weather.measured {
         line.push_str(&format!(
@@ -82,7 +102,37 @@ pub fn mark(
             }
         ));
     }
+    line.push_str(&crate::tide::words(&around.tide));
     line
+}
+
+/// `barometer 1013.8 hPa, falling 1.2 in 3 h (Alameda)`. A change that
+/// rounds to nothing is steady, which is worth saying too. NDBC gives a
+/// tendency only on the hour, so one past an hour old says how old:
+/// `(Alameda, 1 h 20 min ago)`.
+fn barometer(b: &crate::wind::Barometer) -> String {
+    let age = match b.age_minutes {
+        Some(m) if m > 60 => format!(", {} ago", crate::day::hours(m * 60)),
+        _ => String::new(),
+    };
+    let reading = b
+        .pressure_hpa
+        .map(|p| format!(" {p:.1} hPa,"))
+        .unwrap_or_default();
+    let change = if b.tendency_hpa.abs() < 0.05 {
+        "steady over 3 h".to_string()
+    } else {
+        format!(
+            "{} {:.1} in 3 h",
+            if b.tendency_hpa > 0.0 {
+                "rising"
+            } else {
+                "falling"
+            },
+            b.tendency_hpa.abs()
+        )
+    };
+    format!("barometer{reading} {change} ({}{age})", b.name)
 }
 
 /// `13 kn from 262°, gusting 18`. A calm has no direction to give, and a
@@ -151,7 +201,90 @@ mod tests {
                 dir_deg: Some(250.0),
                 gust_kn: None,
             }),
+            barometer: None,
         }
+    }
+
+    /// Everything running: the extras lead, then the weather, then the water.
+    #[test]
+    fn a_mark_with_everything_running_reads_in_order() {
+        let at = time::local(NOON);
+        let mut weather = blowing();
+        weather.barometer = Some(crate::wind::Barometer {
+            name: "Alameda".into(),
+            nm: 6.4,
+            pressure_hpa: Some(1013.8),
+            tendency_hpa: -1.2,
+            age_minutes: Some(40),
+        });
+        let tide = crate::tide::Tide {
+            water: Some(crate::tide::Water {
+                name: "Berkeley".into(),
+                nm: 0.38,
+                height_m: 1.372,
+                rising: Some(false),
+            }),
+            stream: Some(crate::tide::Stream {
+                name: "Emeryville Marina".into(),
+                nm: 1.47,
+                knots: 1.38,
+                way: "ebb".into(),
+                set_deg: Some(294.0),
+            }),
+        };
+        let line = mark(
+            at,
+            time::utc(NOON),
+            Some((37.8667, -122.315, Some(0.4), Some(11.0))),
+            "Departed",
+            "",
+            &Around {
+                weather,
+                tide,
+                extras: vec!["sunset 19:05".into()],
+            },
+        );
+        let rest = line.split_once("— Departed").expect("the mark").1;
+        assert_eq!(
+            rest,
+            " · sunset 19:05 · wind 13 kn from 262°, gusting 18 (HRRR) · 1014.6 hPa \
+             · barometer 1013.8 hPa, falling 1.2 in 3 h (Alameda) \
+             · measured 11 kn from 250° (Alameda, 12 min) \
+             · tide 1.37 m falling (Berkeley, 0.4 nm) \
+             · ebb 1.4 kn toward 294° (Emeryville Marina, 1.5 nm)"
+        );
+    }
+
+    #[test]
+    fn a_barometer_that_hasnt_moved_is_steady() {
+        let b = crate::wind::Barometer {
+            name: "Alameda".into(),
+            nm: 6.4,
+            pressure_hpa: None,
+            tendency_hpa: 0.0,
+            age_minutes: None,
+        };
+        assert_eq!(barometer(&b), "barometer steady over 3 h (Alameda)");
+        let up = crate::wind::Barometer {
+            tendency_hpa: 2.04,
+            pressure_hpa: Some(1020.0),
+            age_minutes: Some(60),
+            ..b.clone()
+        };
+        assert_eq!(
+            barometer(&up),
+            "barometer 1020.0 hPa, rising 2.0 in 3 h (Alameda)"
+        );
+        // Past the hour, the tendency says how old it is.
+        let old = crate::wind::Barometer {
+            tendency_hpa: -1.2,
+            age_minutes: Some(80),
+            ..b
+        };
+        assert_eq!(
+            barometer(&old),
+            "barometer falling 1.2 in 3 h (Alameda, 1 h 20 min ago)"
+        );
     }
 
     #[test]
@@ -163,7 +296,10 @@ mod tests {
             Some((37.8667, -122.315, Some(5.1), Some(245.0))),
             "Departed",
             "",
-            &blowing(),
+            &Around {
+                weather: blowing(),
+                ..Default::default()
+            },
         );
         assert!(line.contains("— Departed ·"), "{line}");
         assert!(line.contains("245°"), "{line}");
