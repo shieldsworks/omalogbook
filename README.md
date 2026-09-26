@@ -95,8 +95,10 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
     equations, checked to the minute against an independent implementation),
     and leaves it off once the sun has already set.
   - `/berth` closes the **trip** since the last `/depart` — up to a month
-    back, and only if the boat hasn't been berthed or moored since — from the
-    notes and GPX tracks on disk:
+    back — from the notes and GPX tracks on disk. A night on a mooring or at
+    anchor is part of the trip; an earlier `/berth` with no `/depart` after
+    it is not, and the line says `trip: no /depart since the last berth`
+    instead:
 
     ```markdown
     — Berthed · trip 20.1 nm in 4 h 25 min (2.4 inferred) · under way 4 h 24 min

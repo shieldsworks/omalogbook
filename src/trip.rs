@@ -49,11 +49,16 @@ struct Point {
 /// The labels a trip is built from, as the presets write them.
 const DEPARTED: &str = "Departed";
 const UNDER: [(&str, Leg); 2] = [("Sailing", Leg::Sail), ("Motoring", Leg::Motor)];
-/// Marks that end a trip. Found before a `Departed`, looking back, they
-/// mean there is no trip open to sum up.
-const ENDED: [&str; 2] = ["Berthed", "Moored"];
+/// The mark that ends a trip. A night on a mooring or at anchor is part of
+/// a passage, and a guest berth partway is followed by a `/depart`; so,
+/// looking back, only a `Berthed` with no `Departed` after it means there is
+/// no trip open to sum up.
+const ENDED: &str = "Berthed";
 /// Marks that end a leg under sail or engine without starting another.
 const STILL: [&str; 3] = ["Anchor down", "Moored", "Berthed"];
+
+/// What `/berth` says when the last trip already ended alongside.
+const NO_DEPART: &str = "trip: no /depart since the last berth";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Leg {
@@ -61,10 +66,28 @@ enum Leg {
     Motor,
 }
 
-/// The trip's figures, worded, one part per item, for the mark's line. Empty
-/// when there is no `/depart` to measure from.
+/// Where looking back from now for the trip's start ended up.
+#[derive(Debug, PartialEq)]
+enum Since {
+    /// The latest `Departed` and every mark after it, oldest first.
+    Departed(Vec<Mark>),
+    /// A `Berthed` came first: that trip is over, and this one had no
+    /// `/depart`.
+    Berthed,
+    /// Nothing either way in the last month.
+    Nothing,
+}
+
+/// The trip's figures, worded, one part per item, for the mark's line.
+/// Empty when there is nothing to measure from; a word to say so when the
+/// boat was berthed since the last `/depart`, so a missing summary isn't
+/// mistaken for a bug.
 pub fn summary(vault: &Path, now: i64, underway_kn: f64) -> Vec<String> {
-    let marks = marks_since_departure(vault, now);
+    let marks = match marks_since_departure(vault, now) {
+        Since::Departed(marks) => marks,
+        Since::Berthed => return vec![NO_DEPART.to_string()],
+        Since::Nothing => return Vec::new(),
+    };
     let Some(depart) = marks.first().map(|m| m.epoch) else {
         return Vec::new();
     };
@@ -72,15 +95,12 @@ pub fn summary(vault: &Path, now: i64, underway_kn: f64) -> Vec<String> {
     words(depart, now, &marks, &points, underway_kn)
 }
 
-/// The latest `Departed` mark and every mark after it up to `now`, oldest
-/// first. Empty when there is no departure in the last month, or when the
-/// boat was already berthed or moored since the last one: that trip is
-/// over, and this one never had its `/depart`.
-fn marks_since_departure(vault: &Path, now: i64) -> Vec<Mark> {
+/// Look back from `now`, up to a month, for the trip's start.
+fn marks_since_departure(vault: &Path, now: i64) -> Since {
     let mut later: Vec<Mark> = Vec::new();
     let today = time::local(now).date();
     let Some(today_index) = time::day_index(&today) else {
-        return Vec::new();
+        return Since::Nothing;
     };
     for back in 0..=MAX_DAYS {
         let date = time::utc((today_index - back) * 86_400).date();
@@ -89,18 +109,18 @@ fn marks_since_departure(vault: &Path, now: i64) -> Vec<Mark> {
         // Newest first, so the first `Departed` found is the latest.
         marks.sort_by_key(|m| std::cmp::Reverse(m.epoch));
         for m in marks {
-            if ENDED.contains(&m.label.as_str()) {
-                return Vec::new();
+            if m.label == ENDED {
+                return Since::Berthed;
             }
             let departed = m.label == DEPARTED;
             later.push(m);
             if departed {
                 later.reverse();
-                return later;
+                return Since::Departed(later);
             }
         }
     }
-    Vec::new()
+    Since::Nothing
 }
 
 /// Every mark in one day's note that nobody has struck through.
@@ -514,13 +534,16 @@ mod tests {
         let mut d = day::Day::open(&v, &date, "Dash").unwrap();
         let second = mark_line(START + 600, "Departed");
         d.revise(1, &second, &day::Revision::Strike).unwrap();
-        let marks = marks_since_departure(&v, START + 3600);
+        let Since::Departed(marks) = marks_since_departure(&v, START + 3600) else {
+            panic!("no departure found");
+        };
         assert_eq!(marks.first().map(|m| m.epoch), Some(START), "{marks:?}");
     }
 
     /// Yesterday's trip ended alongside; today the crew sailed without a
     /// `/depart` and typed `/berth`. Summing back to yesterday's departure
-    /// would be a 26-hour trip that never happened.
+    /// would be a 26-hour trip that never happened, and saying nothing would
+    /// look like a bug, so the line says why.
     #[test]
     fn a_trip_already_berthed_is_not_summed_again() {
         let v = vault("reberth");
@@ -535,19 +558,36 @@ mod tests {
         let tomorrow = START + 86_400;
         note(&v, tomorrow, &[mark_line(tomorrow, "Sailing")]);
         track(&v, tomorrow, 3600, 37.8663, 5.0);
-        assert!(summary(&v, tomorrow + 3600, 1.0).is_empty());
+        assert_eq!(
+            summary(&v, tomorrow + 3600, 1.0),
+            vec!["trip: no /depart since the last berth"]
+        );
+    }
 
-        // A mooring ends a trip just the same.
+    /// Two days out with a night on a mooring: the mooring pauses the trip,
+    /// it doesn't end it, and `/berth` sums up both days.
+    #[test]
+    fn a_night_on_a_mooring_is_part_of_the_trip() {
         let v = vault("moored");
+        let tomorrow = START + 86_400;
         note(
             &v,
             START,
             &[
                 mark_line(START, "Departed"),
-                mark_line(START + 3600, "Moored"),
+                mark_line(START + 60, "Sailing"),
+                mark_line(START + 3600 + 60, "Moored"),
             ],
         );
-        assert!(summary(&v, START + 7200, 1.0).is_empty());
+        note(&v, tomorrow, &[mark_line(tomorrow, "Sailing")]);
+        let lat = track(&v, START + 60, 3600, 37.8663, 5.0);
+        track(&v, tomorrow, 3600, lat, 5.0);
+        let parts = summary(&v, tomorrow + 3600 + 60, 1.0);
+        let line = parts.join(" · ");
+        assert!(line.starts_with("trip 10.0 nm in 25 h 01 min"), "{line}");
+        assert!(line.contains("under way 2 h 00 min"), "{line}");
+        // The night on the mooring is neither sailing nor motoring.
+        assert!(line.ends_with("sail 2 h 01 min"), "{line}");
     }
 
     /// An hour sailing at 5 kn, then three hours of dropout that drifted
