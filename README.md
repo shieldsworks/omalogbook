@@ -68,20 +68,54 @@ Reefed off Angel Island, wind up to 22. Crab boat crossed close astern.
   a position.
 - **Marks the moments.** A line that opens with a mark — `/depart`,
   `/anchor 25 ft, 5:1`, `/reef` — is filed as an event, with the course and
-  speed you were making and what it was blowing:
+  speed you were making, what it was blowing, and what the water was doing:
 
   ```markdown
   - **14:32** (21:32 UTC) · 37°52.0′N 122°18.9′W · 245° · 5.1 kn — Departed
-    · wind 13 kn from 262°, gusting 18 (HRRR) · 1014.6 hPa
+    · sunset 19:05 · wind 13 kn from 262°, gusting 18 (HRRR) · 1014.6 hPa
+    · barometer 1013.8 hPa, falling 1.2 in 3 h (Alameda)
     · measured 11 kn from 250° (Alameda, 12 min)
+    · tide 1.37 m falling (Berkeley, 0.4 nm)
+    · ebb 1.4 kn toward 294° (Emeryville Marina, 1.5 nm)
   ```
 
+  Every mark records:
+
+  | Part | From |
+  | --- | --- |
+  | Time, local and UTC; position, course and speed | omakeel |
+  | `wind … (HRRR)` and its hPa | [omawind](https://github.com/shieldsworks/omawind)'s forecast at the boat |
+  | `barometer …, falling 1.2 in 3 h` | the nearest NDBC station within 10 nm reporting a three-hour tendency, via omawind |
+  | `measured …` | the nearest NDBC anemometer within 10 nm, via omawind |
+  | `tide …` and the stream | [omatide](https://github.com/shieldsworks/omatide)'s predictions at the nearest tide and current station within 10 nm |
+
+  And two marks say one thing more:
+
+  - `/depart` adds the **sunset** at the boat, worked out here (NOAA's solar
+    equations, checked to the minute against an independent implementation).
+  - `/berth` closes the **trip** since the last `/depart` — up to a month
+    back — from the notes and GPX tracks on disk:
+
+    ```markdown
+    — Berthed · trip 20.1 nm in 4 h 25 min (2.4 inferred) · under way 4 h 24 min
+      · avg 4.5 kn · top 7.4 kn · sail 3 h 40 min, motor 32 min
+    ```
+
+    Distance is fix to fix along the tracks. Where the fixes stop for 90
+    seconds or more the straight line across the hole is counted, and said
+    apart as inferred. A hole counts as time under way when the boat came out
+    of it somewhere else, at under-way speed. Top speed is the fastest track
+    point, which is every ten seconds, so it can read a little under the
+    day's `fastest`. `sail` and `motor` add up the time from each `/sail` and
+    `/motor` to the next mark that changes how the boat is moving; they are
+    left off when you marked neither. A struck entry counts for nothing.
+
   The two wind readings are different things and the log never blurs them.
-  `wind … (HRRR)` is [omawind](https://github.com/shieldsworks/omawind)'s
-  forecast worked out at the boat — a model's opinion, and the only source of
-  a barometer reading. `measured …` is an anemometer that really measured
-  that wind, at a named NDBC station within 10 nm. With omawind down, or the
-  forecast pinned somewhere other than the boat, a mark files without them.
+  `wind … (HRRR)` is a model's opinion; `measured …` is an anemometer that
+  really measured that wind, somewhere named. The tide and stream are
+  predictions, and name their stations for the same reason. Anything that
+  can't be had — an engine down, no fix, a forecast pinned somewhere other
+  than the boat — is simply left off, and the mark still files.
 
   The marks are `depart`, `sail`, `motor`, `reef`, `shake`, `anchor`,
   `aweigh`, `moor`, `berth` and `watch`; `omalogbook presets` lists them, and
@@ -277,7 +311,7 @@ Keep your own vault private, and think before you publish a track.
   enough log to want them.
 - Routes, which [omahelm](https://github.com/shieldsworks/omahelm) does not have
   yet. Tracks are recorded now; routes will be logged once there are any.
-- Weather beyond wind and pressure. A mark carries both, from omawind; air
+- Weather beyond wind, pressure and the tide. A mark carries them; air
   and water temperature, sky, visibility and sea state wait until the boat
   has instruments to read them from. Ordinary notes carry no weather at all —
   they are your words, and an instrument reading stapled to them would read

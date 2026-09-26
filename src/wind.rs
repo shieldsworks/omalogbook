@@ -44,15 +44,28 @@ pub struct Measured {
     pub gust_kn: Option<f64>,
 }
 
+/// A barometer that really read the pressure, and how it has moved: NDBC's
+/// three-hour tendency, the oldest weather sign in a ship's log. A model
+/// can't give this; HRRR has no memory of the last three hours.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Barometer {
+    pub name: String,
+    pub nm: f64,
+    pub pressure_hpa: Option<f64>,
+    /// Hectopascals gained (positive) or lost over the last three hours.
+    pub tendency_hpa: f64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Weather {
     pub forecast: Option<Forecast>,
     pub measured: Option<Measured>,
+    pub barometer: Option<Barometer>,
 }
 
 impl Weather {
     pub fn is_empty(&self) -> bool {
-        self.forecast.is_none() && self.measured.is_none()
+        self.forecast.is_none() && self.measured.is_none() && self.barometer.is_none()
     }
 }
 
@@ -80,6 +93,25 @@ fn speed(v: &Value, key: &str) -> Option<f64> {
     number(v, key).filter(|k| (0.0..=300.0).contains(k))
 }
 
+/// A station's barometer, when it reports a tendency. A pressure with no
+/// tendency says less than HRRR's already does, so it isn't worth a line.
+fn barometer(s: &Value, nm: f64) -> Option<Barometer> {
+    // A real three-hour change past 20 hPa is a hurricane arriving; anything
+    // beyond it is a bad report.
+    let tendency_hpa = number(s, "tendencyHpa").filter(|t| t.abs() <= 20.0)?;
+    let id = s.get("id").and_then(Value::as_str).unwrap_or("");
+    let name = s.get("name").and_then(Value::as_str).unwrap_or(id);
+    if name.is_empty() {
+        return None;
+    }
+    Some(Barometer {
+        name: name.to_string(),
+        nm,
+        pressure_hpa: number(s, "pressureHpa").filter(|p| (800.0..=1100.0).contains(p)),
+        tendency_hpa,
+    })
+}
+
 /// What one line from omawind says, given where the boat is. Returns None
 /// for a line that isn't a `state` or `stations` this reader can use.
 fn read(line: &str, at: (f64, f64), now: i64) -> Option<Weather> {
@@ -104,12 +136,13 @@ fn read(line: &str, at: (f64, f64), now: i64) -> Option<Weather> {
                     pressure_hpa: number(here, "pressureHpa")
                         .filter(|p| (800.0..=1100.0).contains(p)),
                 }),
-                measured: None,
+                ..Weather::default()
             })
         }
         "stations" => {
             let list = m.get("stations")?.as_array()?;
             let mut best: Option<Measured> = None;
+            let mut barometer: Option<Barometer> = None;
             for s in list {
                 let (Some(lat), Some(lon)) = (number(s, "lat"), number(s, "lon")) else {
                     continue;
@@ -117,6 +150,13 @@ fn read(line: &str, at: (f64, f64), now: i64) -> Option<Weather> {
                 let nm = geo::distance_nm(at, (lat, lon));
                 if !nm.is_finite() || nm > NEAR_NM {
                     continue;
+                }
+                // The nearest barometer is chosen on its own: the nearest
+                // anemometer often has none.
+                if barometer.as_ref().is_none_or(|b| nm < b.nm)
+                    && let Some(b) = self::barometer(s, nm)
+                {
+                    barometer = Some(b);
                 }
                 if best.as_ref().is_some_and(|b| b.nm <= nm) {
                     continue;
@@ -142,9 +182,10 @@ fn read(line: &str, at: (f64, f64), now: i64) -> Option<Weather> {
                     gust_kn: speed(s, "gustKn"),
                 });
             }
-            best.map(|m| Weather {
+            (best.is_some() || barometer.is_some()).then_some(Weather {
                 forecast: None,
-                measured: Some(m),
+                measured: best,
+                barometer,
             })
         }
         _ => None,
@@ -178,6 +219,9 @@ pub fn once(socket: &Path, at: (f64, f64), now: i64, wait: Duration) -> Weather 
                     }
                     if w.measured.is_some() {
                         weather.measured = w.measured;
+                    }
+                    if w.barometer.is_some() {
+                        weather.barometer = w.barometer;
                     }
                     if weather.forecast.is_some() && weather.measured.is_some() {
                         break;
@@ -275,6 +319,40 @@ mod tests {
         ] {
             assert_eq!(read(line, BOAT, NOON), None, "{line}");
         }
+    }
+
+    /// The nearest barometer is picked on its own: here the nearest station
+    /// has wind and no barometer, and one further off has both.
+    #[test]
+    fn the_nearest_barometer_is_its_own_choice() {
+        let line = r#"{"type":"stations","v":1,"stations":[
+            {"id":"AAMC1","name":"Alameda","lat":37.772,"lon":-122.3,"speedKn":2.9,"pressureHpa":1013.8,"tendencyHpa":-1.2},
+            {"id":"NEAR","name":"Berkeley Pier","lat":37.866,"lon":-122.33,"speedKn":6.0}]}"#
+            .replace('\n', "");
+        let w = read(&line, BOAT, NOON).expect("stations");
+        assert_eq!(w.measured.expect("wind").name, "Berkeley Pier");
+        let b = w.barometer.expect("a barometer");
+        assert_eq!(b.name, "Alameda");
+        assert_eq!(b.pressure_hpa, Some(1013.8));
+        assert_eq!(b.tendency_hpa, -1.2);
+    }
+
+    /// A pressure with no tendency is not a barometer worth a line, and a
+    /// tendency no weather makes is a bad report.
+    #[test]
+    fn a_barometer_needs_a_believable_tendency() {
+        for tendency in [r#""#, r#","tendencyHpa":99"#, r#","tendencyHpa":"up""#] {
+            let line = format!(
+                r#"{{"type":"stations","v":1,"stations":[{{"id":"AAMC1","name":"Alameda","lat":37.772,"lon":-122.3,"speedKn":2.9,"pressureHpa":1013.8{tendency}}}]}}"#
+            );
+            let w = read(&line, BOAT, NOON).expect("stations");
+            assert_eq!(w.barometer, None, "{tendency}");
+        }
+        // A barometer with no anemometer is still weather.
+        let line = r#"{"type":"stations","v":1,"stations":[{"id":"AAMC1","name":"Alameda","lat":37.772,"lon":-122.3,"tendencyHpa":0.4}]}"#;
+        let w = read(line, BOAT, NOON).expect("stations");
+        assert_eq!(w.measured, None);
+        assert_eq!(w.barometer.expect("a barometer").pressure_hpa, None);
     }
 
     #[test]

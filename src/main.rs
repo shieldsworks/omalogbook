@@ -1,4 +1,6 @@
-use omalogbook::{config, day, entry, keel, lock, preset, time, totals, watch::Watch, wind};
+use omalogbook::{
+    config, day, entry, keel, lock, preset, sun, tide, time, totals, trip, watch::Watch, wind,
+};
 use std::{path::PathBuf, process::ExitCode};
 
 const USAGE: &str = "\
@@ -41,6 +43,10 @@ const FIX_WAIT: std::time::Duration = std::time::Duration::from_millis(600);
 /// And how long a mark waits for omawind. Two messages rather than one, so
 /// a little longer, and still nothing the crew would notice.
 const WIND_WAIT: std::time::Duration = std::time::Duration::from_millis(900);
+
+/// And for omatide, asked at the same time as omawind, so the two waits
+/// overlap rather than add up.
+const TIDE_WAIT: std::time::Duration = std::time::Duration::from_millis(900);
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -169,12 +175,48 @@ fn note(args: &[&str]) -> ExitCode {
     // A mark also asks omawind what it was blowing. Only a mark: a note is
     // the crew's words, and an instrument reading stapled to them would
     // read as the machine talking over the top.
-    let weather = match (&typed, here) {
-        (preset::Typed::Mark(..), Some(fix)) => wind::default_socket()
-            .map(|s| wind::once(&s, (fix.lat, fix.lon), now, WIND_WAIT))
-            .unwrap_or_default(),
-        _ => wind::Weather::default(),
+    //
+    // The water comes with it, from omatide, asked alongside omawind so the
+    // two waits overlap. Both need the fix: without one there is no saying
+    // whose weather or whose tide it was.
+    let mut around = match (&typed, here) {
+        (preset::Typed::Mark(..), Some(fix)) => std::thread::scope(|s| {
+            let wind = s.spawn(|| {
+                wind::default_socket()
+                    .map(|sock| wind::once(&sock, (fix.lat, fix.lon), now, WIND_WAIT))
+                    .unwrap_or_default()
+            });
+            let tide = tide::default_socket()
+                .map(|sock| tide::once(&sock, TIDE_WAIT))
+                .unwrap_or_default();
+            entry::Around {
+                weather: wind.join().unwrap_or_default(),
+                tide,
+                extras: Vec::new(),
+            }
+        }),
+        _ => entry::Around::default(),
     };
+    if let preset::Typed::Mark(p, _) = &typed {
+        match p.word {
+            // Leaving the berth: how much daylight there is to sail in.
+            "depart" => {
+                if let Some(fix) = here
+                    && let Some(set) = sun::sunset(&date, fix.lat, fix.lon)
+                {
+                    around
+                        .extras
+                        .push(format!("sunset {}", time::local(set).clock()));
+                }
+            }
+            // Back alongside: the trip since the last `/depart`, from what
+            // is on disk, so it needs no fix and no engine running.
+            "berth" => {
+                around.extras = trip::summary(&settings.vault, now, settings.underway_kn);
+            }
+            _ => {}
+        }
+    }
     let write = || -> std::io::Result<PathBuf> {
         let _lock = lock::Lock::take(&settings.vault)?;
         let mut day = day::Day::open(&settings.vault, &date, &settings.boat)?;
@@ -186,7 +228,7 @@ fn note(args: &[&str]) -> ExitCode {
                 here.map(|f| (f.lat, f.lon, f.sog_kn, f.cog_deg)),
                 p.label,
                 said,
-                &weather,
+                &around,
             ),
             _ => match here {
                 Some(fix) => entry::note_at(at, utc, fix.lat, fix.lon, &text),
