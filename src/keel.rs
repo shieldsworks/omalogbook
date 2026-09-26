@@ -120,6 +120,24 @@ impl Why {
         }
     }
 
+    /// How much a reason says within its kind: a link that is down with the
+    /// error says more than one that is down, which says more than one that
+    /// is connecting. Between two reasons that are the same place to look,
+    /// the one that says more is the one to keep.
+    pub fn detail(&self) -> u32 {
+        match self {
+            Why::Links(links) => links
+                .iter()
+                .map(|l| match (l.state, &l.message) {
+                    ("down", Some(_)) => 2,
+                    ("down", None) => 1,
+                    _ => 0,
+                })
+                .sum(),
+            _ => 0,
+        }
+    }
+
     /// The reason in words, for the log.
     pub fn say(&self) -> String {
         match self {

@@ -380,10 +380,10 @@ impl Watch {
             return Ok(Vec::new());
         };
         let why = why.without(&outage.idle);
-        // A reason that says the same thing with less, as `connecting` after
-        // `down (Connection refused)` does, doesn't replace it: the error is
-        // the useful part.
-        if !outage.why.same_as(&why) {
+        // Between two reasons that are the same place to look, the one that
+        // says more wins: `connecting` after `down (Connection refused)`
+        // doesn't replace it, and the error does replace `connecting`.
+        if !outage.why.same_as(&why) || why.detail() > outage.why.detail() {
             outage.why = why;
         }
         if !outage.written {
@@ -392,7 +392,10 @@ impl Watch {
             }
             return self.write_outage();
         }
-        if outage.said.same_as(&outage.why) {
+        // The same place to look, unless all the log has said is that the
+        // link is connecting and now there's an error to say.
+        let now_says_why = outage.said.detail() == 0 && outage.why.detail() > 0;
+        if outage.said.same_as(&outage.why) && !now_says_why {
             return Ok(Vec::new());
         }
         // Past the cap, only the hub going is still worth a line: it ends
@@ -1414,6 +1417,71 @@ mod tests {
             [
                 "no fix: omakeel, the hub, isn't answering",
                 "still no fix: tcp:gps:10110 is connecting"
+            ]
+        );
+    }
+
+    /// A bridge flip that happens to be caught connecting still gets its
+    /// error written.
+    #[test]
+    fn a_flip_caught_connecting_still_says_the_error() {
+        let mut watch = Watch::new(settings("caught")).unwrap();
+        let mut at = 1_789_300_800;
+        for _ in 0..60 {
+            watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+            at += 1;
+        }
+        for second in 0..30 {
+            let link = if second % 3 == 0 {
+                "connecting"
+            } else {
+                "error"
+            };
+            watch
+                .update(state("stale", at, &[(GPS, link)]), at)
+                .unwrap();
+            at += 1;
+        }
+        let lines = no_fix_lines(&watch);
+        assert_eq!(
+            lines,
+            ["no fix: tcp:gps:10110 is down (Connection reset by peer)"],
+            "{lines:?}"
+        );
+    }
+
+    /// After a hub restart, "connecting" and then refused: the refusal is
+    /// written, once.
+    #[test]
+    fn connecting_then_refused_says_refused() {
+        let mut watch = Watch::new(settings("refused")).unwrap();
+        let mut at = 1_789_300_800;
+        for _ in 0..60 {
+            watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
+            at += 1;
+        }
+        for _ in 0..5 {
+            watch.update(keel::Update::Lost, at).unwrap();
+            at += 1;
+        }
+        for _ in 0..4 {
+            watch
+                .update(state("none", at, &[(GPS, "connecting")]), at)
+                .unwrap();
+            at += 1;
+        }
+        for _ in 0..30 {
+            watch
+                .update(state("none", at, &[(GPS, "error")]), at)
+                .unwrap();
+            at += 1;
+        }
+        assert_eq!(
+            no_fix_lines(&watch),
+            [
+                "no fix: omakeel, the hub, isn't answering",
+                "still no fix: tcp:gps:10110 is connecting",
+                "still no fix: tcp:gps:10110 is down (Connection reset by peer)"
             ]
         );
     }
