@@ -12,6 +12,11 @@ run = "cargo build --locked"
 description = "Unit tests"
 run = "cargo test --locked"
 
+[tasks.goldens]
+description = "Byte-compare the sample sail with tests/golden under TZ=UTC"
+env = { TZ = "UTC" }
+run = "cargo test --locked --test golden -- --ignored"
+
 [tasks.lint]
 description = "rustfmt check and clippy with warnings denied"
 run = [
