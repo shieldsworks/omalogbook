@@ -1,0 +1,15 @@
+# Omahoy suite clippy configuration. Copy to the repo root next to Cargo.toml.
+# The lint levels live in Cargo.toml's [lints] table (see Cargo-lints.toml);
+# this file only tunes how some of those lints behave.
+
+# Tests may unwrap and expect: a panic is how a test fails.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
+
+# Keep the MSRV in step with Cargo.toml's rust-version so clippy never
+# suggests an API the declared minimum doesn't have.
+msrv = "1.89"
+
+# Words the suite uses that doc_markdown should not ask to backtick.
+doc-valid-idents = ["NOAA", "GRIB", "HRRR", "NMEA", "AIS", "GPX", "S-57", "ENC", "QML", "..."]
