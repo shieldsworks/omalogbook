@@ -16,3 +16,15 @@ tokio = { version = "1.53", features = ["rt", "net", "time", "sync", "io-util", 
 
 [profile.release]
 debug = "line-tables-only"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+undocumented_unsafe_blocks = "deny"
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"

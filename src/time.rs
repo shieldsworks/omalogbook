@@ -96,7 +96,19 @@ impl Local {
 /// The local calendar, from the C library, so the zone and its summer time
 /// come from the machine rather than from arithmetic here.
 pub fn local(epoch: i64) -> Local {
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let mut tm = libc::tm {
+        tm_sec: 0,
+        tm_min: 0,
+        tm_hour: 0,
+        tm_mday: 0,
+        tm_mon: 0,
+        tm_year: 0,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: 0,
+        tm_gmtoff: 0,
+        tm_zone: std::ptr::null(),
+    };
     let t = epoch as libc::time_t;
     // SAFETY: localtime_r fills the caller's tm and touches nothing else.
     let filled = unsafe { libc::localtime_r(&t, &mut tm) };

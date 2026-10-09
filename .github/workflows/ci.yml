@@ -37,9 +37,26 @@ jobs:
             ~/.cargo/git
             target
           key: rust-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'mise.toml') }}
-      - name: Lint
-        run: mise lint
-      - name: Test
-        run: mise test
+      - name: Verify
+        run: VERIFY_SKIP=qml scripts/verify.sh
       - name: Release build
         run: cargo build --release --locked
+
+  qml:
+    name: qmllint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Ubuntu 24.04 ships Qt 6.4 qmllint, which rejects flags 6.12 accepts.
+      - name: qmllint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv python3-pip
+          python3 -m venv "$RUNNER_TEMP/qt"
+          "$RUNNER_TEMP/qt/bin/pip" install PySide6-Essentials==6.12.0
+          qmllint=$(find "$RUNNER_TEMP/qt/bin" -type f -name pyside6-qmllint -executable | head -n 1)
+          test -x "$qmllint"
+          QMLLINT="$qmllint" scripts/verify.sh qml

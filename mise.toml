@@ -12,6 +12,11 @@ run = "cargo build --locked"
 description = "Unit tests"
 run = "cargo test --locked"
 
+[tasks.goldens]
+description = "Byte-compare the sample sail with tests/golden under TZ=UTC"
+env = { TZ = "UTC" }
+run = "cargo test --locked --test golden -- --ignored"
+
 [tasks.lint]
 description = "rustfmt check and clippy with warnings denied"
 run = [
@@ -24,7 +29,9 @@ description = "rustfmt, writing"
 run = "cargo fmt"
 
 [tasks.replay]
-description = "Write a log from omakeel's sample sail into a scratch vault"
-run = [
-  "cargo run --locked -- run --vault /tmp/omalogbook-replay --no-git",
-]
+description = "Follow a live omakeel into a new temporary vault"
+run = 'dir=$(mktemp -d) && printf "%s\n" "$dir" && cargo run --locked -- run --vault "$dir" --no-git'
+
+[tasks.verify]
+description = "Lint, test, comments, qmllint, goldens, and a clean tree"
+run = "scripts/verify.sh"

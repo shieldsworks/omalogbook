@@ -26,16 +26,16 @@ QtObject {
     function read(text) {
         var out = {}, section = "";
         var lines = String(text).split("\n");
-        for (var i = 0; i < lines.length; i++) {
-            var line = lines[i].trim();
+        for (let i = 0; i < lines.length; i++) {
+            let line = lines[i].trim();
             if (!line || line[0] === "#") continue;
-            var head = line.match(/^\[([^\]]+)\]\s*(#.*)?$/);
+            let head = line.match(/^\[([^\]]+)\]\s*(#.*)?$/);
             if (head) { section = head[1].trim() + "."; continue; }
             // A quoted value keeps its `#` (colors are "#rrggbb"); a bare
             // one ends at a comment.
-            var kv = line.match(/^([\w.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^#]*?))\s*(#.*)?$/);
+            let kv = line.match(/^([\w.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^#]*?))\s*(#.*)?$/);
             if (!kv) continue;
-            var v = kv[2] !== undefined ? kv[2] : kv[3] !== undefined ? kv[3] : kv[4];
+            let v = kv[2] !== undefined ? kv[2] : kv[3] !== undefined ? kv[3] : kv[4];
             if (kv[4] !== undefined && /^-?\d+(\.\d+)?$/.test(v)) v = Number(v);
             out[section + kv[1]] = v;
         }
