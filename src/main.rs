@@ -119,7 +119,7 @@ fn run(args: &[&str]) -> ExitCode {
         }
     };
     runtime.block_on(async move {
-        let mut watch = match Watch::new(settings) {
+        let mut watch = match Watch::new(settings, time::now()) {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("omalogbook: {e}");

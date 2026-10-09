@@ -109,9 +109,9 @@ pub struct Watch {
 }
 
 impl Watch {
-    pub fn new(settings: Settings) -> io::Result<Watch> {
+    pub fn new(settings: Settings, now: i64) -> io::Result<Watch> {
         let vault = settings.vault.clone();
-        let day = Day::open(&vault, &day::today(), &settings.boat)?;
+        let day = Day::open(&vault, &time::local(now).date(), &settings.boat)?;
         Ok(Watch {
             settings,
             vault,
@@ -664,7 +664,7 @@ mod tests {
     fn writes_a_days_log_from_a_sail() {
         let s = settings("sail");
         let vault = s.vault.clone();
-        let mut watch = Watch::new(s).unwrap();
+        let mut watch = Watch::new(s, 1_789_300_800).unwrap();
         sail(&mut watch, 1_789_300_800);
         watch.close().unwrap();
 
@@ -693,8 +693,8 @@ mod tests {
     #[test]
     fn a_passage_survives_a_dropped_fix() {
         let s = settings("dropout");
-        let mut watch = Watch::new(s).unwrap();
         let start = 1_789_300_800;
+        let mut watch = Watch::new(s, start).unwrap();
         watch
             .update(fix(37.8663, -122.3148, 5.0, start), start)
             .unwrap();
@@ -714,8 +714,8 @@ mod tests {
     #[test]
     fn a_long_gap_is_not_counted_as_sailing() {
         let s = settings("gap");
-        let mut watch = Watch::new(s).unwrap();
         let start = 1_789_300_800;
+        let mut watch = Watch::new(s, start).unwrap();
         watch
             .update(fix(37.8663, -122.3148, 5.0, start), start)
             .unwrap();
@@ -734,8 +734,8 @@ mod tests {
     fn a_receiver_days_out_does_not_move_the_log() {
         let s = settings("clock");
         let vault = s.vault.clone();
-        let mut watch = Watch::new(s).unwrap();
         let now = time::now();
+        let mut watch = Watch::new(s, now).unwrap();
         let today = watch.day_path().to_path_buf();
         // A replayed sail, or a receiver with the wrong week: five days back.
         let stale = now - 5 * 86_400;
@@ -758,8 +758,8 @@ mod tests {
     #[test]
     fn a_receiver_in_step_keeps_its_own_time() {
         let s = settings("in-step");
-        let mut watch = Watch::new(s).unwrap();
         let now = time::now();
+        let mut watch = Watch::new(s, now).unwrap();
         watch
             .update(fix(37.8663, -122.3148, 5.0, now - 30), now)
             .unwrap();
@@ -770,8 +770,8 @@ mod tests {
     #[test]
     fn anchor_jitter_does_not_hold_a_passage_open() {
         let s = settings("jitter");
-        let mut watch = Watch::new(s).unwrap();
         let start = time::now();
+        let mut watch = Watch::new(s, start).unwrap();
         watch
             .update(fix(37.8663, -122.3148, 5.0, start), start)
             .unwrap();
@@ -790,8 +790,8 @@ mod tests {
     #[test]
     fn a_passage_does_not_outlive_the_fix() {
         let s = settings("abandoned");
-        let mut watch = Watch::new(s).unwrap();
         let start = time::now();
+        let mut watch = Watch::new(s, start).unwrap();
         watch
             .update(fix(37.8663, -122.3148, 5.0, start), start)
             .unwrap();
@@ -808,8 +808,8 @@ mod tests {
     #[test]
     fn an_unknown_protocol_is_said_once() {
         let s = settings("protocol");
-        let mut watch = Watch::new(s).unwrap();
         let now = time::now();
+        let mut watch = Watch::new(s, now).unwrap();
         for step in 0..20 {
             watch
                 .update(keel::Update::Incompatible(2), now + step)
@@ -822,8 +822,8 @@ mod tests {
     #[test]
     fn a_receiver_out_of_step_does_not_close_the_passage() {
         let s = settings("skew");
-        let mut watch = Watch::new(s).unwrap();
         let now = time::now();
+        let mut watch = Watch::new(s, now).unwrap();
         // Twenty-five minutes behind, inside the hour the log tolerates.
         let receiver = now - 1500;
         watch
@@ -839,9 +839,9 @@ mod tests {
     fn a_receiver_out_of_step_does_not_flip_the_day() {
         let s = settings("flip");
         let vault = s.vault.clone();
-        let mut watch = Watch::new(s).unwrap();
+        let now = time::now();
+        let mut watch = Watch::new(s, now).unwrap();
         let midnight = {
-            let now = time::now();
             let l = time::local(now);
             now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second) + 86_400
         };
@@ -872,12 +872,12 @@ mod tests {
     fn a_clock_set_wrong_at_boot_is_followed_later() {
         let s = settings("stepped");
         let vault = s.vault.clone();
-        let mut watch = Watch::new(s).unwrap();
+        let now = time::now();
+        let mut watch = Watch::new(s, now).unwrap();
         // Anchored to midday rather than to whatever time the tests are run.
         // This scenario steps an hour, and an hour after 23:30 is tomorrow —
         // the day would move for an honest reason and the check below would
         // read it as the log flipping.
-        let now = time::now();
         let l = time::local(now);
         let midday =
             now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second)
@@ -913,8 +913,8 @@ mod tests {
     #[test]
     fn an_entry_is_stamped_with_the_day_it_is_filed_under() {
         let s = settings("stamp-day");
-        let mut watch = Watch::new(s).unwrap();
         let now = time::now();
+        let mut watch = Watch::new(s, now).unwrap();
         let l = time::local(now);
         let midnight =
             now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second)
@@ -935,10 +935,10 @@ mod tests {
     fn midnight_starts_a_new_note() {
         let s = settings("midnight");
         let vault = s.vault.clone();
-        let mut watch = Watch::new(s).unwrap();
+        let now = time::now();
+        let mut watch = Watch::new(s, now).unwrap();
         // 23:59:30 local and a minute later, whatever the machine's zone.
         let midnight = {
-            let now = time::now();
             let l = time::local(now);
             now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second) + 86_400
         };
@@ -965,8 +965,8 @@ mod tests {
 
     /// Under way, then the fix goes: the watch as the next few seconds see it.
     fn under_way(name: &str) -> (Watch, i64) {
-        let mut watch = Watch::new(settings(name)).unwrap();
         let start = 1_789_300_800;
+        let mut watch = Watch::new(settings(name), start).unwrap();
         for step in 0..3 {
             let at = start + step * 10;
             watch
@@ -1112,8 +1112,8 @@ mod tests {
     /// even when it happened to be delivering at the last good fix.
     #[test]
     fn an_idle_ais_receiver_is_not_blamed() {
-        let mut watch = Watch::new(settings("ais")).unwrap();
         let t = 1_789_300_800;
+        let mut watch = Watch::new(settings("ais"), t).unwrap();
         let ais = |second: i64| if second % 7 < 3 { "quiet" } else { "ok" };
         for second in 0..60 {
             let at = t + second;
@@ -1136,8 +1136,8 @@ mod tests {
     /// break is the link's, not only the first.
     #[test]
     fn a_link_that_breaks_twice_is_named_twice() {
-        let mut watch = Watch::new(settings("twice")).unwrap();
         let mut at = 1_789_300_800;
+        let mut watch = Watch::new(settings("twice"), at).unwrap();
         for _ in 0..2 {
             for _ in 0..60 {
                 watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
@@ -1170,8 +1170,8 @@ mod tests {
     /// doesn't make the link a bystander when it then breaks for real.
     #[test]
     fn a_blip_without_a_loss_does_not_make_the_link_idle() {
-        let mut watch = Watch::new(settings("blip")).unwrap();
         let mut at = 1_789_300_800;
+        let mut watch = Watch::new(settings("blip"), at).unwrap();
         let mut run = |watch: &mut Watch, status: &str, link: &str, secs: i64| {
             for _ in 0..secs {
                 watch.update(state(status, at, &[(GPS, link)]), at).unwrap();
@@ -1192,8 +1192,8 @@ mod tests {
     /// it, is the receiver's doing, not the AIS's.
     #[test]
     fn a_quiet_ais_is_not_blamed_for_a_silent_gps() {
-        let mut watch = Watch::new(settings("silent")).unwrap();
         let t = 1_789_300_800;
+        let mut watch = Watch::new(settings("silent"), t).unwrap();
         for second in 0..60 {
             let at = t + second;
             watch
@@ -1218,8 +1218,8 @@ mod tests {
     /// has to say so.
     #[test]
     fn a_broken_gps_link_is_named_though_it_broke_before_the_fix_went() {
-        let mut watch = Watch::new(settings("race")).unwrap();
         let t = 1_789_300_800;
+        let mut watch = Watch::new(settings("race"), t).unwrap();
         for second in 0..5 {
             let at = t + second;
             watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
@@ -1248,9 +1248,9 @@ mod tests {
     fn a_fix_lost_before_midnight_is_in_that_days_note() {
         let s = settings("late");
         let vault = s.vault.clone();
-        let mut watch = Watch::new(s).unwrap();
+        let now = time::now();
+        let mut watch = Watch::new(s, now).unwrap();
         let midnight = {
-            let now = time::now();
             let l = time::local(now);
             now - i64::from(l.hour) * 3600 - i64::from(l.minute) * 60 - i64::from(l.second) + 86_400
         };
@@ -1303,8 +1303,8 @@ mod tests {
     /// calls a link that answered "down".
     #[test]
     fn a_bridge_that_comes_back_empty_says_so() {
-        let mut watch = Watch::new(settings("bridge")).unwrap();
         let mut at = 1_789_300_800;
+        let mut watch = Watch::new(settings("bridge"), at).unwrap();
         let mut run = |watch: &mut Watch, status: &str, link: &str, secs: i64| {
             for _ in 0..secs {
                 watch.update(state(status, at, &[(GPS, link)]), at).unwrap();
@@ -1345,8 +1345,8 @@ mod tests {
     /// two seconds. That's one reason, not a line every flip.
     #[test]
     fn a_bridge_that_accepts_and_hangs_up_is_one_line() {
-        let mut watch = Watch::new(settings("flip")).unwrap();
         let mut at = 1_789_300_800;
+        let mut watch = Watch::new(settings("flip"), at).unwrap();
         for _ in 0..60 {
             watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
             at += 1;
@@ -1372,8 +1372,8 @@ mod tests {
     /// the reason, not the reconnect.
     #[test]
     fn a_quick_reconnect_keeps_the_reset_as_the_reason() {
-        let mut watch = Watch::new(settings("quick")).unwrap();
         let mut at = 1_789_300_800;
+        let mut watch = Watch::new(settings("quick"), at).unwrap();
         let mut run = |watch: &mut Watch, status: &str, link: &str, secs: i64| {
             for _ in 0..secs {
                 watch.update(state(status, at, &[(GPS, link)]), at).unwrap();
@@ -1396,8 +1396,8 @@ mod tests {
     /// After the hub restarts, a link still coming up is said as such.
     #[test]
     fn a_link_coming_up_after_the_hub_is_connecting() {
-        let mut watch = Watch::new(settings("restart")).unwrap();
         let mut at = 1_789_300_800;
+        let mut watch = Watch::new(settings("restart"), at).unwrap();
         for _ in 0..60 {
             watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
             at += 1;
@@ -1425,8 +1425,8 @@ mod tests {
     /// error written.
     #[test]
     fn a_flip_caught_connecting_still_says_the_error() {
-        let mut watch = Watch::new(settings("caught")).unwrap();
         let mut at = 1_789_300_800;
+        let mut watch = Watch::new(settings("caught"), at).unwrap();
         for _ in 0..60 {
             watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
             at += 1;
@@ -1454,8 +1454,8 @@ mod tests {
     /// written, once.
     #[test]
     fn connecting_then_refused_says_refused() {
-        let mut watch = Watch::new(settings("refused")).unwrap();
         let mut at = 1_789_300_800;
+        let mut watch = Watch::new(settings("refused"), at).unwrap();
         for _ in 0..60 {
             watch.update(state("ok", at, &[(GPS, "ok")]), at).unwrap();
             at += 1;
