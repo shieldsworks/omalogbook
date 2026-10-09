@@ -16,7 +16,7 @@ You are not done until this passes from the repo root.
 scripts/verify.sh
 ```
 
-It runs, in order, `mise lint`, `mise test`, the comment check, qmllint on `ui/` when qmllint is installed, `mise goldens`, and a check that verification left no new files in the tree. A step that cannot run is listed as not run. It is not counted as passed. Fix what a check reports. Do not weaken the check that reported it.
+It runs, in order, `mise lint`, `mise test`, the comment check, qmllint on `ui/` when qmllint is installed, `mise goldens`, and a check that verification left no new files in the tree. A step that cannot run is listed as not run. It is not counted as passed. CI runs `VERIFY_SKIP=qml scripts/verify.sh`, then `cargo build --release --locked`, on x86_64 and aarch64. A separate job runs `scripts/verify.sh qml` with PySide6-Essentials 6.12.0. Fix what a check reports. Do not weaken the check that reported it.
 
 Commands:
 
