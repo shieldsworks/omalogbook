@@ -114,7 +114,7 @@ QtObject {
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
-                    var m = JSON.parse(text);
+                    let m = JSON.parse(text);
                     if (m && m.v === book.version && Array.isArray(m.presets)) book.presets = m.presets;
                 } catch (e) {
                     // An older omalogbook without `presets` costs the
