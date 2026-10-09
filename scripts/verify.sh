@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
-# The one command that says a change to omalogbook is done.
-# Agents run it before calling a task finished. CI runs it with
-# VERIFY_SKIP=qml, and runs the qml step in its own job with QMLLINT set.
-#
-#   scripts/verify.sh
-#   scripts/verify.sh goldens qml
-#   VERIFY_SKIP=lint,test scripts/verify.sh
-#   QMLLINT=/path/to/qmllint scripts/verify.sh qml
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+cannot_run=3
 all_steps=(lint test comments qml goldens clean)
 steps=("$@")
 ((${#steps[@]})) || steps=("${all_steps[@]}")
@@ -19,7 +12,6 @@ if [[ -n ${VERIFY_SKIP:-} ]]; then
   IFS=',' read -r -a skip <<< "$VERIFY_SKIP"
 fi
 
-# A name that is not a step would otherwise skip nothing, or run nothing.
 for s in "${steps[@]}" "${skip[@]}"; do
   [[ " ${all_steps[*]} " == *" $s "* ]] || {
     printf 'Unknown step: %s\n' "$s" >&2
@@ -34,12 +26,8 @@ skipped() {
   return 1
 }
 
-# Snapshot the tree first, so "clean" can tell files this run created
-# from work that was already there.
 before=$(git status --porcelain --untracked-files=all)
 
-# A step returns 0 when it passed, 3 when it could not run, and
-# anything else when it failed.
 step_lint() { mise lint; }
 step_test() { mise test; }
 
@@ -55,7 +43,7 @@ step_qml() {
   local q
   compgen -G 'ui/*.qml' >/dev/null || {
     echo 'No ui/*.qml.'
-    return 3
+    return "$cannot_run"
   }
   if [[ -n ${QMLLINT:-} ]]; then
     if [[ -f $QMLLINT && -x $QMLLINT ]]; then
@@ -70,7 +58,7 @@ step_qml() {
     q=$(command -v qmllint || command -v qmllint6 || command -v pyside6-qmllint || true)
     if [[ -z ${q:-} || ! -f $q || ! -x $q ]]; then
       echo 'qmllint is not installed.'
-      return 3
+      return "$cannot_run"
     fi
   fi
   # Quickshell's modules are not installed for qmllint, so import, type,
@@ -104,7 +92,7 @@ for s in "${steps[@]}"; do
   "step_$s" || rc=$?
   case $rc in
     0) passed+=("$s") ;;
-    3) not_run+=("$s") ;;
+    "$cannot_run") not_run+=("$s") ;;
     *) failed+=("$s") ;;
   esac
 done

@@ -15,18 +15,28 @@ struct Step {
     update: keel::Update,
 }
 
+const START: i64 = 1_789_300_800;
+const MINUTES_UNDER_WAY: i64 = 15;
+const SAIL_KN: f64 = 4.7;
+const STILL_KN: f64 = 0.2;
+const EVERY_MINUTES: u32 = 60;
+const UNDERWAY_KN: f64 = 1.0;
+const STOPPED_KN: f64 = 0.5;
+const STOP_AFTER_MINUTES: u32 = 5;
+const POINT_SECONDS: u32 = 300;
+
 fn morning() -> Sail {
-    const START: i64 = 1_789_300_800;
     let mut steps = Vec::new();
-    steps.push(fix(37.8663, -122.3148, 0.2, START));
-    for step in 1_i64..=15 {
+    steps.push(fix(37.8663, -122.3148, STILL_KN, START));
+    for step in 1..=MINUTES_UNDER_WAY {
         let lat = 37.8663 + (step as f64) * 0.0012;
-        steps.push(fix(lat, -122.3148, 4.7, START + step * 60));
+        steps.push(fix(lat, -122.3148, SAIL_KN, START + step * 60));
     }
-    // Still from minute 16. The passage ends once that has lasted five minutes.
-    let held = 37.8663 + 15.0 * 0.0012;
-    for step in 16_i64..=21 {
-        steps.push(fix(held, -122.3148, 0.2, START + step * 60));
+    let held = 37.8663 + (MINUTES_UNDER_WAY as f64) * 0.0012;
+    let still_from = MINUTES_UNDER_WAY + 1;
+    let still_until = still_from + i64::from(STOP_AFTER_MINUTES);
+    for step in still_from..=still_until {
+        steps.push(fix(held, -122.3148, STILL_KN, START + step * 60));
     }
     Sail {
         name: "morning",
@@ -105,11 +115,11 @@ fn write_vault(sail: &Sail, vault: &Path) -> io::Result<()> {
     let settings = Settings {
         vault: vault.to_path_buf(),
         boat: "Dash".into(),
-        every_minutes: 60,
-        underway_kn: 1.0,
-        stopped_kn: 0.5,
-        stop_after_minutes: 5,
-        point_seconds: 300,
+        every_minutes: EVERY_MINUTES,
+        underway_kn: UNDERWAY_KN,
+        stopped_kn: STOPPED_KN,
+        stop_after_minutes: STOP_AFTER_MINUTES,
+        point_seconds: POINT_SECONDS,
         git: false,
     };
     let mut watch = Watch::new(settings, first.now)?;
