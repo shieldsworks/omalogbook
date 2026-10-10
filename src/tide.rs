@@ -56,10 +56,8 @@ impl Tide {
 
 /// `$XDG_RUNTIME_DIR/omatide/tide.sock`.
 pub fn default_socket() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|d| d.is_absolute())
-        .map(|d| d.join("omatide").join("tide.sock"))
+    crate::config::usable_env_path(std::env::var_os("XDG_RUNTIME_DIR"))
+        .map(|dir| dir.join("omatide").join("tide.sock"))
 }
 
 fn number(v: &Value, key: &str) -> Option<f64> {

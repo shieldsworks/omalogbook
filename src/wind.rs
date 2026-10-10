@@ -77,10 +77,8 @@ impl Weather {
 
 /// `$XDG_RUNTIME_DIR/omawind/wind.sock`.
 pub fn default_socket() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|d| d.is_absolute())
-        .map(|d| d.join("omawind").join("wind.sock"))
+    crate::config::usable_env_path(std::env::var_os("XDG_RUNTIME_DIR"))
+        .map(|dir| dir.join("omawind").join("wind.sock"))
 }
 
 fn number(v: &Value, key: &str) -> Option<f64> {

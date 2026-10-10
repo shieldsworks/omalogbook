@@ -68,10 +68,13 @@ fn main() -> ExitCode {
         Some((&"amend", rest)) => amend(rest),
         Some((&"strike", rest)) => strike(rest),
         Some((&"path", rest)) => path(rest),
-        Some((&"vault", _)) => {
-            println!("{}", settings(&[]).0.vault.display());
-            ExitCode::SUCCESS
-        }
+        Some((&"vault", _)) => match settings(&[]) {
+            Ok((settings, _)) => {
+                println!("{}", settings.vault.display());
+                ExitCode::SUCCESS
+            }
+            Err(code) => code,
+        },
         Some((other, _)) => {
             eprintln!("omalogbook: no such command: {other}\n\n{USAGE}");
             ExitCode::from(64)
@@ -80,30 +83,51 @@ fn main() -> ExitCode {
 }
 
 /// Settings from the config file, with the flags on top.
-fn settings(args: &[&str]) -> (config::Settings, Option<PathBuf>) {
-    let (mut s, problems) = config::load(&config::default_path());
-    for p in problems {
-        eprintln!("omalogbook: {p}");
-    }
+fn settings(args: &[&str]) -> Result<(config::Settings, Option<PathBuf>), ExitCode> {
+    let mut chosen = None;
     let mut socket = None;
+    let mut no_git = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match *arg {
             "--vault" => {
                 if let Some(v) = it.next() {
-                    s.vault = PathBuf::from(v);
+                    chosen = Some(PathBuf::from(v));
                 }
             }
             "--socket" => socket = it.next().map(PathBuf::from),
-            "--no-git" => s.git = false,
+            "--no-git" => no_git = true,
             _ => {}
         }
     }
-    (s, socket)
+    let path = match config::default_path() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("omalogbook: {err}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let (mut settings, problems) = match config::load(&path, chosen.as_deref()) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            eprintln!("omalogbook: {err}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    for problem in problems {
+        eprintln!("omalogbook: {problem}");
+    }
+    if no_git {
+        settings.git = false;
+    }
+    Ok((settings, socket))
 }
 
 fn run(args: &[&str]) -> ExitCode {
-    let (settings, socket) = settings(args);
+    let (settings, socket) = match settings(args) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
     let Some(socket) = socket.or_else(keel::default_socket) else {
         eprintln!("omalogbook: no XDG_RUNTIME_DIR; pass --socket PATH to omakeel's socket");
         return ExitCode::FAILURE;
@@ -165,7 +189,10 @@ fn note(args: &[&str]) -> ExitCode {
         eprintln!("omalogbook: what should the entry say?\n\n{USAGE}");
         return ExitCode::from(64);
     }
-    let (settings, _) = settings(&[]);
+    let (settings, _) = match settings(&[]) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
     let now = time::now();
     let date = time::local(now).date();
     // Where the boat is as the note is written. A hub that is down or has no
@@ -262,7 +289,10 @@ fn note(args: &[&str]) -> ExitCode {
 /// Reads the note on disk and nothing else, so it works whether or not the
 /// log is running.
 fn today(args: &[&str]) -> ExitCode {
-    let (settings, _) = settings(&[]);
+    let (settings, _) = match settings(&[]) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
     let mut date = day::today();
     let mut json = false;
     let mut it = args.iter();
@@ -386,7 +416,10 @@ fn revise(args: &[&str], how: impl Fn(&Which) -> day::Revision) -> ExitCode {
             return ExitCode::from(64);
         }
     };
-    let (settings, _) = settings(&[]);
+    let (settings, _) = match settings(&[]) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
     let how = how(&w);
     let done = || -> std::io::Result<(String, PathBuf)> {
         let _lock = lock::Lock::take(&settings.vault)?;
@@ -439,7 +472,10 @@ fn strike(args: &[&str]) -> ExitCode {
 /// Every day in the log, added up. Named `lifetime` here because `totals` is
 /// the module that does the adding.
 fn lifetime(args: &[&str]) -> ExitCode {
-    let (settings, _) = settings(args);
+    let (settings, _) = match settings(args) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
     let now = time::local(time::now());
     let sums = totals::read(&settings.vault, now.year);
     let all = &sums.all;
@@ -596,7 +632,10 @@ fn presets(args: &[&str]) -> ExitCode {
 }
 
 fn path(args: &[&str]) -> ExitCode {
-    let (settings, _) = settings(&[]);
+    let (settings, _) = match settings(&[]) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
     let mut date = day::today();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
