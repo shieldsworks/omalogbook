@@ -1,14 +1,15 @@
 //! Distance run, and positions written the way a log keeps them.
 
+const EARTH_RADIUS_NM: f64 = 3440.065;
+
 /// Nautical miles between two positions, on a sphere. The error against an
 /// ellipsoid is about 0.3%, far below what a day's run is quoted to.
 pub fn distance_nm(from: (f64, f64), to: (f64, f64)) -> f64 {
-    const EARTH_NM: f64 = 3440.065;
     let (lat1, lon1) = (from.0.to_radians(), from.1.to_radians());
     let (lat2, lon2) = (to.0.to_radians(), to.1.to_radians());
     let (dlat, dlon) = (lat2 - lat1, lon2 - lon1);
     let a = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
-    2.0 * EARTH_NM * a.sqrt().clamp(0.0, 1.0).asin()
+    2.0 * EARTH_RADIUS_NM * a.sqrt().clamp(0.0, 1.0).asin()
 }
 
 /// `37°52.0′N`, degrees and decimal minutes, as a chart and a log use.
@@ -47,8 +48,8 @@ mod tests {
 
     #[test]
     fn a_degree_of_latitude_is_sixty_miles() {
-        let d = distance_nm((37.0, -122.0), (38.0, -122.0));
-        assert!((d - 60.0).abs() < 0.2, "{d}");
+        let miles = distance_nm((37.0, -122.0), (38.0, -122.0));
+        assert_eq!(format!("{miles:.6}"), "60.040461");
     }
 
     #[test]
