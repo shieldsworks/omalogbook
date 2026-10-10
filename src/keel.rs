@@ -1,7 +1,3 @@
-//! The boat's position from omakeel. `omakeel_protocol` reads each line.
-//! This module keeps a current fix, and says why one is missing. Read only,
-//! as every Omahoy app is.
-
 use omakeel_protocol::{FixStatus, Message, ReadError, SourceState, SourceStatus};
 use std::{
     io::Read,
@@ -174,11 +170,6 @@ pub fn read(line: &str) -> Option<Update> {
     }
 }
 
-/// A current fix, or why there isn't one.
-///
-/// A stale place stays in the message. It says where the boat was, so it is
-/// not a fix. A receiver that reports `nofix` is talking, and the other
-/// sources are not the reason.
 fn from_state(fix: &omakeel_protocol::Fix, sources: &[SourceState]) -> Update {
     let links = unwell(sources);
     if let Some(position) = fix.position().filter(|position| position.current)
@@ -209,7 +200,6 @@ fn from_state(fix: &omakeel_protocol::Fix, sources: &[SourceState]) -> Update {
     Update::NoFix(why)
 }
 
-/// The sources that aren't delivering. `ok` is left out.
 fn unwell(sources: &[SourceState]) -> Vec<Link> {
     sources
         .iter()
@@ -218,7 +208,6 @@ fn unwell(sources: &[SourceState]) -> Vec<Link> {
             let state = match source.status {
                 SourceStatus::Ok => return None,
                 SourceStatus::Error => "down",
-                // The link starting, or just reached, with nothing heard yet.
                 SourceStatus::Connecting => "connecting",
                 SourceStatus::Quiet => "quiet",
                 SourceStatus::Ended => "ended",
@@ -232,8 +221,6 @@ fn unwell(sources: &[SourceState]) -> Vec<Link> {
         .collect()
 }
 
-/// A short, single-line string from the hub, or nothing. It goes into a
-/// markdown note, so no line breaks and nothing that could run on for pages.
 fn clip(raw: &str) -> Option<String> {
     let clipped: String = raw
         .chars()
@@ -244,9 +231,6 @@ fn clip(raw: &str) -> Option<String> {
     (!clipped.is_empty()).then(|| clipped.to_string())
 }
 
-/// The protocol named a line and then refused it. There is no source list to
-/// blame, so the log can only say the position is missing. Another version is
-/// named. A line that is not a message is ignored.
 fn refused(error: ReadError) -> Option<Update> {
     match error {
         ReadError::Version { found: Some(found) } => Some(Update::Incompatible(u64::from(found))),
