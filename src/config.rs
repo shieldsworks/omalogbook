@@ -27,7 +27,7 @@ pub struct NoHome;
 
 impl std::fmt::Display for NoHome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("HOME is unset")
+        f.write_str("HOME must be set to an absolute path")
     }
 }
 
@@ -366,8 +366,8 @@ not a pair
     }
 
     #[test]
-    fn no_home_says_home_is_unset() {
-        assert_eq!(NoHome.to_string(), "HOME is unset");
+    fn no_home_must_be_an_absolute_path() {
+        assert_eq!(NoHome.to_string(), "HOME must be set to an absolute path");
     }
 
     #[test]

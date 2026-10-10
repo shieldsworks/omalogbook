@@ -14,7 +14,10 @@ fn vault_without_home_stops() {
     let output = command(&["vault"]).output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    assert_eq!(output.stderr, b"omalogbook: HOME is unset\n");
+    assert_eq!(
+        output.stderr,
+        b"omalogbook: HOME must be set to an absolute path\n"
+    );
 }
 
 #[test]
@@ -50,7 +53,10 @@ fn an_empty_or_relative_home_stops() {
         let output = command(&["vault"]).env("HOME", home).output().unwrap();
         assert_eq!(output.status.code(), Some(1), "{home:?}");
         assert!(output.stdout.is_empty(), "{home:?}");
-        assert_eq!(output.stderr, b"omalogbook: HOME is unset\n", "{home:?}");
+        assert_eq!(
+            output.stderr, b"omalogbook: HOME must be set to an absolute path\n",
+            "{home:?}"
+        );
     }
 }
 
