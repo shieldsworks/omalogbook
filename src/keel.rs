@@ -1,8 +1,8 @@
-//! The boat's position from omakeel: its socket and `state` messages, version
-//! 1, as omakeel's docs/protocol.md describes them. Read only, as every
-//! Omahoy app is.
+//! The boat's position from omakeel. `omakeel_protocol` reads each line.
+//! This module keeps a current fix, and says why one is missing. Read only,
+//! as every Omahoy app is.
 
-use serde_json::Value;
+use omakeel_protocol::{FixStatus, Message, ReadError, SourceState, SourceStatus};
 use std::{
     io::Read,
     path::{Path, PathBuf},
@@ -167,93 +167,66 @@ pub fn default_socket() -> Option<PathBuf> {
 
 /// What one line from omakeel says about the boat, if anything.
 pub fn read(line: &str) -> Option<Update> {
-    let m: Value = serde_json::from_str(line).ok()?;
-    let v = m.get("v")?.as_u64()?;
-    if v != 1 {
-        return Some(Update::Incompatible(v));
+    match Message::from_line(line) {
+        Ok(Some(Message::State { fix, sources, .. })) => Some(from_state(&fix, &sources)),
+        Ok(Some(Message::Hello { .. } | Message::Targets { .. })) | Ok(None) => None,
+        Err(error) => refused(error),
     }
-    if m.get("type")?.as_str()? != "state" {
-        return None;
-    }
-    let fix = m.get("fix")?;
-    let status = fix.get("status").and_then(Value::as_str).unwrap_or("none");
-    let number = |key: &str| {
-        fix.get(key)
-            .and_then(Value::as_f64)
-            .filter(|v| v.is_finite())
-    };
-    let satellites = number("satellites")
-        .filter(|n| (0.0..=255.0).contains(n))
-        .map(|n| n as u32);
-    let hdop = number("hdop").filter(|h| (0.0..=99.99).contains(h));
-    let (lat, lon) = (number("lat"), number("lon"));
-    if status == "ok"
-        && let (Some(lat), Some(lon)) = (lat, lon)
-        && (-90.0..=90.0).contains(&lat)
-        && (-180.0..=180.0).contains(&lon)
-    {
-        return Some(Update::Fix(
-            Fix {
-                lat,
-                lon,
-                sog_kn: number("sogKn").filter(|k| (0.0..=100.0).contains(k)),
-                cog_deg: number("cogDeg"),
-                utc: fix
-                    .get("utc")
-                    .and_then(Value::as_str)
-                    .and_then(crate::time::parse_utc),
-                satellites,
-                hdop,
-            },
-            unwell(m.get("sources"))
-                .into_iter()
-                .map(|l| l.name)
-                .collect(),
-        ));
-    }
-    Some(Update::NoFix(why(status, m.get("sources"))))
 }
 
-/// Why omakeel has no current fix, from its `fix.status` and `sources`.
+/// A current fix, or why there isn't one.
 ///
-/// A receiver that says it has no fix is talking, so the link is fine
-/// whatever the other sources are doing (an AIS receiver can be quiet on an
-/// empty bay). Otherwise the sources that aren't delivering are the reason,
-/// and when they all are, the receiver is sending something other than a
-/// position.
-fn why(status: &str, sources: Option<&Value>) -> Why {
-    if status == "nofix" {
-        return Why::Receiver;
-    }
+/// A stale place stays in the message. It says where the boat was, so it is
+/// not a fix. A receiver that reports `nofix` is talking, and the other
+/// sources are not the reason.
+fn from_state(fix: &omakeel_protocol::Fix, sources: &[SourceState]) -> Update {
     let links = unwell(sources);
-    if links.is_empty() {
+    if let Some(position) = fix.position().filter(|position| position.current)
+        && (-90.0..=90.0).contains(&position.place.lat)
+        && (-180.0..=180.0).contains(&position.place.lon)
+    {
+        let place = &position.place;
+        return Update::Fix(
+            Fix {
+                lat: place.lat,
+                lon: place.lon,
+                sog_kn: place.sog_kn.filter(|knots| (0.0..=100.0).contains(knots)),
+                cog_deg: place.cog_deg,
+                utc: place.utc.as_deref().and_then(crate::time::parse_utc),
+                satellites: place.satellites.map(u32::from),
+                hdop: place.hdop.filter(|hdop| (0.0..=99.99).contains(hdop)),
+            },
+            links.into_iter().map(|link| link.name).collect(),
+        );
+    }
+    let why = if fix.status() == FixStatus::Nofix {
+        Why::Receiver
+    } else if links.is_empty() {
         Why::Silent
     } else {
         Why::Links(links)
-    }
+    };
+    Update::NoFix(why)
 }
 
-/// The sources that aren't delivering, as omakeel lists them.
-fn unwell(sources: Option<&Value>) -> Vec<Link> {
+/// The sources that aren't delivering. `ok` is left out.
+fn unwell(sources: &[SourceState]) -> Vec<Link> {
     sources
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+        .iter()
         .take(32)
-        .filter_map(|s| {
-            let state = match s.get("status").and_then(Value::as_str)? {
-                "error" => "down",
+        .filter_map(|source| {
+            let state = match source.status {
+                SourceStatus::Ok => return None,
+                SourceStatus::Error => "down",
                 // The link starting, or just reached, with nothing heard yet.
-                // Not "down", which it may not be; not up, which it isn't yet.
-                "connecting" => "connecting",
-                "quiet" => "quiet",
-                "ended" => "ended",
-                _ => return None,
+                SourceStatus::Connecting => "connecting",
+                SourceStatus::Quiet => "quiet",
+                SourceStatus::Ended => "ended",
             };
             Some(Link {
-                name: text(s.get("name"))?,
+                name: clip(&source.name)?,
                 state,
-                message: text(s.get("message")),
+                message: source.message.as_deref().and_then(clip),
             })
         })
         .collect()
@@ -261,15 +234,29 @@ fn unwell(sources: Option<&Value>) -> Vec<Link> {
 
 /// A short, single-line string from the hub, or nothing. It goes into a
 /// markdown note, so no line breaks and nothing that could run on for pages.
-fn text(v: Option<&Value>) -> Option<String> {
-    let s: String = v?
-        .as_str()?
+fn clip(raw: &str) -> Option<String> {
+    let clipped: String = raw
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .take(120)
         .collect();
-    let s = s.trim();
-    (!s.is_empty()).then(|| s.to_string())
+    let clipped = clipped.trim();
+    (!clipped.is_empty()).then(|| clipped.to_string())
+}
+
+/// The protocol named a line and then refused it. There is no source list to
+/// blame, so the log can only say the position is missing. Another version is
+/// named. A line that is not a message is ignored.
+fn refused(error: ReadError) -> Option<Update> {
+    match error {
+        ReadError::Version { found: Some(found) } => Some(Update::Incompatible(u64::from(found))),
+        ReadError::Version { found: None } | ReadError::NotJson => None,
+        ReadError::Null
+        | ReadError::UnknownStatus
+        | ReadError::PositionMissing
+        | ReadError::PositionForbidden
+        | ReadError::PositionPartial => Some(Update::NoFix(Why::Silent)),
+    }
 }
 
 /// The boat's position right now, for a one-shot command like a note. The
@@ -444,7 +431,7 @@ mod tests {
     #[test]
     fn a_good_fix_names_the_sources_already_idle() {
         let line = r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.864711,"lon":-122.3207314,"sogKn":5.0,"cogDeg":255.0,"utc":"2026-09-13T21:00:10Z","satellites":9,"hdop":0.9,"ageSeconds":0},"sources":[{"name":"tcp:gps:10110","status":"ok","sentences":1,"rejected":0},{"name":"serial:/dev/ais:38400","status":"quiet","sentences":0,"rejected":0}]}"#;
-        let Some(Update::Fix(_, idle)) = read(&line) else {
+        let Some(Update::Fix(_, idle)) = read(line) else {
             panic!("no fix");
         };
         assert_eq!(idle, ["serial:/dev/ais:38400"]);
