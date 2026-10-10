@@ -45,6 +45,16 @@ fn vault_reads_an_absolute_config_when_home_is_unset() {
 }
 
 #[test]
+fn an_empty_or_relative_home_stops() {
+    for home in ["", "boat"] {
+        let output = command(&["vault"]).env("HOME", home).output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{home:?}");
+        assert!(output.stdout.is_empty(), "{home:?}");
+        assert_eq!(output.stderr, b"omalogbook: HOME is unset\n", "{home:?}");
+    }
+}
+
+#[test]
 fn presets_do_not_need_home() {
     let output = command(&["presets"]).output().unwrap();
     assert_eq!(output.status.code(), Some(0));

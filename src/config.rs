@@ -60,7 +60,7 @@ pub(crate) fn usable_env_path(value: Option<OsString>) -> Option<PathBuf> {
 }
 
 fn home_from(value: Option<&OsStr>) -> Result<PathBuf, NoHome> {
-    value.map(PathBuf::from).ok_or(NoHome)
+    usable_env_path(value.map(OsString::from)).ok_or(NoHome)
 }
 
 fn classify_vault(value: &str) -> VaultAsk {
@@ -341,6 +341,15 @@ not a pair
             .unwrap(),
             PathBuf::from("/home/ada/.config/omalogbook/config.toml"),
         );
+        assert_eq!(default_path_with(None, Some(OsString::new())), Err(NoHome));
+        assert_eq!(
+            default_path_with(None, Some(OsString::from("boat"))),
+            Err(NoHome)
+        );
+        assert_eq!(
+            default_path_with(Some(OsString::from("/cfg")), Some(OsString::from("boat"))).unwrap(),
+            PathBuf::from("/cfg/omalogbook/config.toml"),
+        );
     }
 
     #[test]
@@ -375,12 +384,34 @@ not a pair
             parse_with("vault = \"~/Logbook\"\n", None, None).unwrap_err(),
             NoHome
         );
+        assert_eq!(
+            parse_with(
+                "vault = \"~/Logbook\"\n",
+                None,
+                Some(OsString::from("boat"))
+            )
+            .unwrap_err(),
+            NoHome
+        );
     }
 
     #[test]
-    fn an_empty_home_is_still_a_home() {
-        let (s, problems) = parse_with("", None, Some(OsString::from(""))).unwrap();
-        assert_eq!(s.vault, PathBuf::from("Logbook"));
+    fn an_empty_or_relative_home_is_not_a_directory() {
+        assert_eq!(
+            parse_with("", None, Some(OsString::new())).unwrap_err(),
+            NoHome
+        );
+        assert_eq!(
+            parse_with("", None, Some(OsString::from("boat"))).unwrap_err(),
+            NoHome
+        );
+        let (s, problems) = parse_with(
+            "vault = \"/boat/log\"\n",
+            None,
+            Some(OsString::from("boat")),
+        )
+        .unwrap();
+        assert_eq!(s.vault, PathBuf::from("/boat/log"));
         assert!(problems.is_empty());
     }
 }
