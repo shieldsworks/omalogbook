@@ -356,7 +356,7 @@ pub fn follow(socket: PathBuf) -> mpsc::Receiver<Update> {
 mod tests {
     use super::*;
 
-    const STATE: &str = r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.864711,"lon":-122.3207314,"sogKn":5.0,"cogDeg":255.0,"utc":"2026-09-13T21:00:10Z","satellites":9,"hdop":0.9,"ageSeconds":0}}"#;
+    const STATE: &str = r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.864711,"lon":-122.3207314,"sogKn":5.0,"cogDeg":255.0,"utc":"2026-09-13T21:00:10Z","satellites":9,"hdop":0.9,"ageSeconds":0},"sources":[]}"#;
 
     #[test]
     fn reads_a_fix() {
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn no_position_at_all() {
-        let line = r#"{"type":"state","v":1,"fix":{"status":"none"}}"#;
+        let line = r#"{"type":"state","v":1,"fix":{"status":"none"},"sources":[]}"#;
         assert_eq!(read(line), Some(Update::NoFix(Why::Silent)));
     }
 
@@ -397,26 +397,29 @@ mod tests {
         assert_eq!(
             state(
                 stale,
-                r#"[{"name":"tcp:10.0.2.2:10110","status":"error","message":"Connection refused (os error 111)"}]"#
+                r#"[{"name":"tcp:10.0.2.2:10110","status":"error","message":"Connection refused (os error 111)","sentences":0,"rejected":0}]"#
             ),
             "tcp:10.0.2.2:10110 is down (Connection refused (os error 111))"
         );
         assert_eq!(
             state(
                 stale,
-                r#"[{"name":"tcp:10.0.2.2:10110","status":"connecting"}]"#
+                r#"[{"name":"tcp:10.0.2.2:10110","status":"connecting","sentences":0,"rejected":0}]"#
             ),
             "tcp:10.0.2.2:10110 is connecting"
         );
         assert_eq!(
             state(
                 stale,
-                r#"[{"name":"tcp:10.0.2.2:10110","status":"quiet"},{"name":"serial:/dev/ttyACM0:38400","status":"ok"}]"#
+                r#"[{"name":"tcp:10.0.2.2:10110","status":"quiet","sentences":0,"rejected":0},{"name":"serial:/dev/ttyACM0:38400","status":"ok","sentences":4,"rejected":0}]"#
             ),
             "tcp:10.0.2.2:10110 is connected but sending nothing"
         );
         assert_eq!(
-            state(stale, r#"[{"name":"tcp:10.0.2.2:10110","status":"ok"}]"#),
+            state(
+                stale,
+                r#"[{"name":"tcp:10.0.2.2:10110","status":"ok","sentences":4,"rejected":0}]"#
+            ),
             "the receiver is talking but sends no position"
         );
         // Talking and saying it has no fix: the link is not the problem, even
@@ -424,19 +427,23 @@ mod tests {
         assert_eq!(
             state(
                 r#"{"status":"nofix","satellites":3}"#,
-                r#"[{"name":"tcp:10.0.2.2:10110","status":"ok"},{"name":"serial:/dev/ttyACM0:38400","status":"quiet"}]"#
+                r#"[{"name":"tcp:10.0.2.2:10110","status":"ok","sentences":4,"rejected":0},{"name":"serial:/dev/ttyACM0:38400","status":"quiet","sentences":0,"rejected":0}]"#
             ),
             "the receiver has no fix"
+        );
+        assert_eq!(
+            state(
+                stale,
+                r#"[{"name":"replay:sail.nmea","status":"ended","sentences":12,"rejected":0}]"#
+            ),
+            "replay:sail.nmea has ended"
         );
         assert_eq!(Why::Hub.say(), "omakeel, the hub, isn't answering");
     }
 
     #[test]
     fn a_good_fix_names_the_sources_already_idle() {
-        let line = STATE.replace(
-            r#""ageSeconds":0}"#,
-            r#""ageSeconds":0},"sources":[{"name":"tcp:gps:10110","status":"ok"},{"name":"serial:/dev/ais:38400","status":"quiet"}]"#,
-        );
+        let line = r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.864711,"lon":-122.3207314,"sogKn":5.0,"cogDeg":255.0,"utc":"2026-09-13T21:00:10Z","satellites":9,"hdop":0.9,"ageSeconds":0},"sources":[{"name":"tcp:gps:10110","status":"ok","sentences":1,"rejected":0},{"name":"serial:/dev/ais:38400","status":"quiet","sentences":0,"rejected":0}]}"#;
         let Some(Update::Fix(_, idle)) = read(&line) else {
             panic!("no fix");
         };
@@ -478,7 +485,7 @@ mod tests {
     fn a_hostile_message_stays_on_one_short_line() {
         let long = "x".repeat(500);
         let line = format!(
-            r#"{{"type":"state","v":1,"fix":{{"status":"stale"}},"sources":[{{"name":"tcp:a:1","status":"error","message":"bad\n- **00:00** forged{long}"}}]}}"#
+            r#"{{"type":"state","v":1,"fix":{{"status":"none"}},"sources":[{{"name":"tcp:a:1","status":"error","message":"bad\n- **00:00** forged{long}","sentences":0,"rejected":0}}]}}"#
         );
         let Some(Update::NoFix(why)) = read(&line) else {
             panic!("no reason");

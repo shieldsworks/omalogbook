@@ -1093,11 +1093,21 @@ mod tests {
         let sources: Vec<String> = sources
             .iter()
             .map(|(name, status)| {
-                format!(r#"{{"name":"{name}","status":"{status}","message":"Connection reset by peer"}}"#)
+                format!(
+                    r#"{{"name":"{name}","status":"{status}","message":"Connection reset by peer","sentences":0,"rejected":0}}"#
+                )
             })
             .collect();
+        // `none` carries no position. `ok` and `stale` carry one, with an age.
+        let fix = if status == "ok" || status == "stale" {
+            format!(
+                r#"{{"status":"{status}","lat":37.8663,"lon":-122.3148,"sogKn":5.0,"cogDeg":245.0,"utc":"{utc}","satellites":9,"hdop":0.9,"ageSeconds":0}}"#
+            )
+        } else {
+            format!(r#"{{"status":"{status}"}}"#)
+        };
         let line = format!(
-            r#"{{"type":"state","v":1,"fix":{{"status":"{status}","lat":37.8663,"lon":-122.3148,"sogKn":5.0,"cogDeg":245.0,"utc":"{utc}","satellites":9,"hdop":0.9}},"sources":[{}]}}"#,
+            r#"{{"type":"state","v":1,"fix":{fix},"sources":[{}]}}"#,
             sources.join(",")
         );
         keel::read(&line).expect("a state")
