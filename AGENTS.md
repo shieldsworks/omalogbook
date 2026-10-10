@@ -67,7 +67,7 @@ The reviewer reports what it ran and saw, not what it assumes.
 
 ## Conventions
 
-- Rust, edition 2024, written from scratch. Dependencies stay `serde_json`, `libc`, and `tokio` unless a task says otherwise.
+- Rust, edition 2024, written from scratch. Dependencies stay `omakeel-protocol`, `serde_json`, `libc`, and `tokio` unless a task says otherwise.
 - Always pass `--locked`. Do not change `Cargo.lock` unless the task is a dependency change.
 - The on-disk format is `docs/format.md`. Change that file in the same change as a format change. There is no `docs/protocol.md`.
 - Distance is `src/geo.rs`. GPX is `src/track.rs`. Do not add GDAL, GEOS, PROJ, or a map crate.
@@ -76,7 +76,7 @@ The reviewer reports what it ran and saw, not what it assumes.
 ## Rules specific to omalogbook
 
 - No GDAL, GEOS, PROJ, or map crates.
-- Dependencies stay `serde_json`, `libc`, and `tokio` unless a task says otherwise.
+- Dependencies stay `omakeel-protocol`, `serde_json`, `libc`, and `tokio` unless a task says otherwise.
 - Keep `docs/format.md` in the same change as a format change.
 - Every behavior change needs a test or a golden.
 - No apologetic or workaround comments.
