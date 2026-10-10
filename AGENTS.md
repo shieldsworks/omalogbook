@@ -30,11 +30,13 @@ To drive the binary the way a user does, use `.cursor/skills/verify/SKILL.md` an
 
 ## The gates are not yours to move
 
-These files set the rules. Change them only in a change whose whole purpose is changing them, and have a human review that change.
+These files set the rules. Change them only in a change whose whole purpose is changing them.
 
 - `[lints]` in `Cargo.toml`, and `clippy.toml`
 - `.github/workflows/`, `scripts/verify.sh`, `scripts/check-comments.sh`
 - `mise.toml` task definitions for `lint` and `test`
+
+A pull request that changes these files merges only after review by someone other than its author. The reviewer is Casey or Casey's delegated reviewer Dev. Dev's review means all three. An independent agent verifies the head on a clean checkout by running `scripts/verify.sh` and driving the changed behavior. An adversarial review challenges the change. CI is green on the exact head SHA merged. The author agent never approves or merges its own pull request.
 
 To silence one lint at one site, use `#[expect(clippy::<lint>, reason = "<the fact that makes this correct>")]` on the smallest item. `#[allow]` without a reason fails the build, and `#[expect]` fails once the code stops needing it. A crate-level allow is never the fix.
 
