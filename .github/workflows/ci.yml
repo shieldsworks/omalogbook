@@ -60,3 +60,17 @@ jobs:
           qmllint=$(find "$RUNNER_TEMP/qt/bin" -type f -name pyside6-qmllint -executable | head -n 1)
           test -x "$qmllint"
           QMLLINT="$qmllint" scripts/verify.sh qml
+
+  engine:
+    name: engine path
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Engine path
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ pkg-config qt6-base-dev qt6-declarative-dev libgl1-mesa-dev qml6-module-qtquick qml6-module-qtqml qml6-module-qtqml-workerscript qml6-module-qtqml-models
+          scripts/verify.sh engine
