@@ -52,6 +52,20 @@ To silence one lint at one site, use `#[expect(clippy::<lint>, reason = "<the fa
 
 Comments state facts about the code and the world it handles. They do not apologize, defer, or hedge. `scripts/check-comments.sh` fails the build on TODO, FIXME, XXX, HACK, workaround, temporary fix, quick fix, for the time being, not ideal, should be fixed, sorry, kludge, and band-aid. If something is wrong, fix it in this change or open an issue and leave the code honest. A constraint from outside the repo is written as the fact. Say what the outside thing does, and what this code does about it.
 
+`scripts/check-comments.sh` is omahoy's canonical copy, carried byte for byte. The pin is this sha256. A copy with any other hash is not this rule.
+
+```
+f3ec8a2d07e8f1e7c50770d0bb93579fc7bb0d60fc8e359a22607ba55cebc6c6  scripts/check-comments.sh
+```
+
+From the repo root, pipe that line to `sha256sum -c`. The comments step in `scripts/verify.sh` does that, then runs the script with no arguments to scan the default set.
+
+```sh
+scripts/check-comments.sh
+```
+
+Pass git pathspecs to scan a different set. Those arguments replace the default set. The script still excludes its own path.
+
 ## Copy the right pattern
 
 You will copy what you see. Before copying, check that the code you copy passes today's lints and has a test. Old code may predate the rules.
