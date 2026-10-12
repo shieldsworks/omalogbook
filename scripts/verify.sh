@@ -86,8 +86,6 @@ step_engine() {
     g++ -fPIC -std=c++17 scripts/qs-url-probe.cpp -o "$work/qs-url-probe" \
       $(pkg-config --cflags --libs Qt6Core Qt6Gui Qt6Qml Qt6Network)
 
-    # `quickshell -p ui/shell.qml` makes ui/ the config root. A panel's
-    # Quickshell.shellDir is the host shell directory instead.
     failed=0
 
     parent_of() { printf '%s\n' "${1%/*}"; }

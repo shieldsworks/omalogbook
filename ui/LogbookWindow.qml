@@ -132,8 +132,13 @@ Item {
             + " kn  ·  under way " + underway;
     }
 
+    readonly property string engineStatus: {
+        if (app.book.error === "") return "";
+        return app.book.lastLog || app.book.error;
+    }
+
     readonly property string emptyText: {
-        if (app.book.error !== "") return app.book.error;
+        if (app.engineStatus !== "") return app.engineStatus;
         if (!app.book.read || app.book.entries.length > 0) return "";
         return "Nothing logged today.\n\nWrite a note above, or start the log with\nomalogbook run to keep the watch.";
     }
@@ -150,8 +155,8 @@ Item {
         target: "omalogbook"
         function status(): string {
             return JSON.stringify({date: app.book.date, boat: app.book.boat, entries: app.book.entries.length,
-                                   read: app.book.read, error: app.book.error, filing: app.book.filing,
-                                   opened: app.opened, night: app.theme.night});
+                                   read: app.book.read, error: app.book.error, log: app.book.lastLog,
+                                   filing: app.book.filing, opened: app.opened, night: app.theme.night});
         }
         function night(): void { app.theme.night = !app.theme.night; }
         function note(text: string): void { app.book.note(text); }
@@ -228,7 +233,10 @@ Item {
             Label {
                 id: title
                 anchors { left: parent.left; right: parent.right; top: appName.bottom; topMargin: 6; leftMargin: 14; rightMargin: 14 }
-                text: app.book.date === "" ? "" : app.book.date + (app.book.boat === "" ? "" : "  ·  " + app.book.boat)
+                text: {
+                    if (app.book.date === "" && app.engineStatus !== "") return app.engineStatus;
+                    return app.book.date === "" ? "" : app.book.date + (app.book.boat === "" ? "" : "  ·  " + app.book.boat);
+                }
                 font.pixelSize: app.theme.baseSize + 2
                 font.bold: true
             }
