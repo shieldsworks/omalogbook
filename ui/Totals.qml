@@ -16,12 +16,13 @@ QtObject {
     id: totals
 
     readonly property int version: 1
-    // This file is <repo>/ui/Totals.qml, and the plugin directory is a
-    // symlink to the checkout, so the build next door is found either way.
-    // Installed from a release there is no build there, and every command
-    // falls back to `omalogbook` on PATH, which is what `cargo install`
-    // leaves. Set OMALOGBOOK_BIN to name one directly.
-    readonly property string repo: decodeURIComponent(String(Qt.resolvedUrl("..")).replace(/^file:\/\//, "")).replace(/\/$/, "")
+    function parentOf(path) {
+        return String(path).replace(/\/[^/]+$/, "");
+    }
+    // `quickshell -p` makes ui/ the config root, so Qt.resolvedUrl("..") is qrc:/qs-blackhole.
+    // Quickshell.shellDir is the host shell when this file is a panel.
+    readonly property string uiDir: decodeURIComponent(String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")).replace(/\/+$/, "")
+    readonly property string repo: parentOf(uiDir)
     readonly property string binary: Quickshell.env("OMALOGBOOK_BIN") || repo + "/target/release/omalogbook"
 
     // argv, never shell text built from paths.

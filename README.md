@@ -223,8 +223,9 @@ editor — shows without a refresh.
 
 In the Omarchy shell it is the plugin's panel (`manifest.json`, id
 `org.omahoy.logbook`); standalone it is its own Quickshell process. Either
-way it finds omalogbook next to the checkout, falling back to `omalogbook` on
-PATH; `OMALOGBOOK_BIN` names one directly.
+way it finds the release build in the parent of this ui directory, the
+checkout or the installed plugin, then `omalogbook` on PATH.
+`OMALOGBOOK_BIN` names one directly.
 
 The window only shows the log. Keeping the watch — the hourly entries, the
 day's run, the GPX — is `omalogbook run`, and it is worth having both.

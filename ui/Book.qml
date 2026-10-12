@@ -12,13 +12,14 @@ QtObject {
     id: book
 
     readonly property int version: 1
-    // Running standalone, shellDir is <repo>/ui, so the checkout's own build
-    // is next door. Loaded as the shell's panel it is the shell's directory
-    // instead, and the build won't be there — every command falls back to
-    // `omalogbook` on PATH, which is what `cargo install` leaves. Set
-    // OMALOGBOOK_BIN to name one directly.
-    readonly property string binary: Quickshell.env("OMALOGBOOK_BIN")
-        || Quickshell.shellDir + "/../target/release/omalogbook"
+    function parentOf(path) {
+        return String(path).replace(/\/[^/]+$/, "");
+    }
+    // `quickshell -p` makes ui/ the config root, so Qt.resolvedUrl("..") is qrc:/qs-blackhole.
+    // Quickshell.shellDir is the host shell when this file is a panel.
+    readonly property string uiDir: decodeURIComponent(String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")).replace(/\/+$/, "")
+    readonly property string repo: parentOf(uiDir)
+    readonly property string binary: Quickshell.env("OMALOGBOOK_BIN") || repo + "/target/release/omalogbook"
 
     // argv, never shell text built from paths.
     function run(args) {
@@ -40,6 +41,7 @@ QtObject {
     // Empty until a read has failed; then what went wrong, for the window
     // to show instead of an empty day.
     property string error: ""
+    property string lastLog: ""
     property bool read: false
     // A note being filed. Two at once would race for the day's lock, so the
     // field waits rather than queues.
@@ -89,10 +91,12 @@ QtObject {
         try {
             m = JSON.parse(text);
         } catch (e) {
+            book.lastLog = "";
             book.error = "omalogbook today --json said something this window can't read.";
             return;
         }
         if (m === null || typeof m !== "object" || m.v !== book.version) {
+            book.lastLog = "";
             book.error = "omalogbook speaks version " + (m && m.v) + " and this window speaks " + book.version + ".";
             return;
         }
@@ -104,6 +108,7 @@ QtObject {
         book.maxSogKn = Number(m.maxSogKn) || 0;
         book.underwaySecs = Number(m.underwaySecs) || 0;
         book.tracks = Array.isArray(m.tracks) ? m.tracks : [];
+        book.lastLog = "";
         book.error = "";
         book.read = true;
     }
@@ -133,7 +138,9 @@ QtObject {
         stderr: StdioCollector { id: readerErr }
         onExited: code => {
             if (code !== 0) {
-                book.error = readerErr.text.trim() || ("omalogbook today exited " + code + ".\nTried: " + book.binary);
+                const lines = readerErr.text.trim().split("\n").filter(line => line !== "");
+                book.lastLog = lines.length ? lines[lines.length - 1] : "";
+                book.error = book.lastLog || ("omalogbook today exited " + code + ".\nTried: " + book.binary);
             }
         }
     }
