@@ -963,3 +963,36 @@ fn check_diagnostics(misses: &mut Vec<String>) {
         misses.push("read dropped the idle source on a good fix".to_string());
     }
 }
+
+#[test]
+fn a_down_link_behind_32_unknown_sources_is_named() {
+    let mut sources: Vec<String> = (0..32)
+        .map(|i| format!(r#"{{"name":"asleep{i}","status":"asleep","sentences":1,"rejected":0}}"#))
+        .collect();
+    sources.push(format!(
+        r#"{{"name":"{GPS}","status":"error","message":"{REFUSED}","sentences":0,"rejected":0}}"#
+    ));
+    let line = state(STALE, &format!("[{}]", sources.join(",")));
+
+    let Some(Update::NoFix(why)) = read(&line) else {
+        panic!("no reason from read for {line}");
+    };
+    assert_eq!(
+        why,
+        Why::Links(vec![link(
+            "tcp:10.0.2.2:10110",
+            "down",
+            Some("Connection refused (os error 111)")
+        )])
+    );
+    assert_eq!(
+        why.say(),
+        "tcp:10.0.2.2:10110 is down (Connection refused (os error 111))"
+    );
+    assert_eq!(why.detail(), 2);
+
+    assert_eq!(
+        read_before_protocol(&line),
+        Some(Update::NoFix(Why::Silent))
+    );
+}
