@@ -1,5 +1,4 @@
-use omakeel_protocol::{FixStatus, Message, SourceState, SourceStatus};
-use serde_json::Value;
+use omakeel_protocol::{FixStatus, Message, ReadError, SourceState, SourceStatus};
 use std::{
     io::Read,
     path::{Path, PathBuf},
@@ -166,107 +165,10 @@ pub fn default_socket() -> Option<PathBuf> {
 pub fn read(line: &str) -> Option<Update> {
     match Message::from_line(line) {
         Ok(Some(Message::State { fix, sources, .. })) => Some(from_state(&fix, &sources)),
-        Ok(Some(Message::Hello { .. } | Message::Targets { .. })) | Ok(None) => None,
-        // The crate rejects a line for a source status it does not name, a
-        // missing source list, one coordinate, a null, or a version past
-        // `u32::MAX`. The field walk still turns that line into a fix or a reason.
-        Err(_) => read_rejected(line),
+        Err(ReadError::Version { found: Some(v) }) => Some(Update::Incompatible(v)),
+        Ok(Some(Message::Hello { .. } | Message::Targets { .. }) | None)
+        | Err(ReadError::Version { found: None } | ReadError::NotJson) => None,
     }
-}
-
-/// The field walk from before `omakeel-protocol`, for a line the crate rejects.
-fn read_rejected(line: &str) -> Option<Update> {
-    fn why(status: &str, sources: Option<&Value>) -> Why {
-        if status == "nofix" {
-            return Why::Receiver;
-        }
-        let links = unwell(sources);
-        if links.is_empty() {
-            Why::Silent
-        } else {
-            Why::Links(links)
-        }
-    }
-
-    fn unwell(sources: Option<&Value>) -> Vec<Link> {
-        sources
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .take(32)
-            .filter_map(|source| {
-                let state = match source.get("status").and_then(Value::as_str)? {
-                    "error" => "down",
-                    "connecting" => "connecting",
-                    "quiet" => "quiet",
-                    "ended" => "ended",
-                    _ => return None,
-                };
-                Some(Link {
-                    name: text(source.get("name"))?,
-                    state,
-                    message: text(source.get("message")),
-                })
-            })
-            .collect()
-    }
-
-    fn text(value: Option<&Value>) -> Option<String> {
-        let raw: String = value?
-            .as_str()?
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .take(120)
-            .collect();
-        let raw = raw.trim();
-        (!raw.is_empty()).then(|| raw.to_string())
-    }
-
-    let m: Value = serde_json::from_str(line).ok()?;
-    let v = m.get("v")?.as_u64()?;
-    if v != 1 {
-        return Some(Update::Incompatible(v));
-    }
-    if m.get("type")?.as_str()? != "state" {
-        return None;
-    }
-    let fix = m.get("fix")?;
-    let status = fix.get("status").and_then(Value::as_str).unwrap_or("none");
-    let number = |key: &str| {
-        fix.get(key)
-            .and_then(Value::as_f64)
-            .filter(|value| value.is_finite())
-    };
-    let satellites = number("satellites")
-        .filter(|n| (0.0..=255.0).contains(n))
-        .map(|n| n as u32);
-    let hdop = number("hdop").filter(|h| (0.0..=99.99).contains(h));
-    let (lat, lon) = (number("lat"), number("lon"));
-    if status == "ok"
-        && let (Some(lat), Some(lon)) = (lat, lon)
-        && (-90.0..=90.0).contains(&lat)
-        && (-180.0..=180.0).contains(&lon)
-    {
-        return Some(Update::Fix(
-            Fix {
-                lat,
-                lon,
-                sog_kn: number("sogKn").filter(|knots| (0.0..=100.0).contains(knots)),
-                cog_deg: number("cogDeg"),
-                utc: fix
-                    .get("utc")
-                    .and_then(Value::as_str)
-                    .and_then(crate::time::parse_utc),
-                satellites,
-                hdop,
-            },
-            unwell(m.get("sources"))
-                .into_iter()
-                .map(|item| item.name)
-                .collect(),
-        ));
-    }
-    Some(Update::NoFix(why(status, m.get("sources"))))
 }
 
 fn from_state(fix: &omakeel_protocol::Fix, sources: &[SourceState]) -> Update {
