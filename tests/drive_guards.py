@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Run drive.sh in a pty and assert the cleanup contracts."""
 
 import os
 import pty
