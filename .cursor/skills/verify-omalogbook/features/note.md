@@ -22,27 +22,37 @@
 
 Preconditions:
 
-- Launch and Doctor from `../SKILL.md` are done. `omalogbook vault` prints `$run/vault`.
+- Launch and Doctor from `../SKILL.md` are done. `drive vault` prints `$run/vault`.
 - No keel socket under `$run/runtime`, so this drive has no fix.
 - `art="$run/artifacts/verify/note"`.
 
 Empty the vault, then take the boat's date from the same env the binary uses.
 
 ```sh
-: "${run:?}" && rm -rf "$run/vault" && mkdir -p "$run/vault" "$art"
-: "${run:?}" && [ -r "$run/env" ] && day=$(env $(cat "$run/env") date +%F)
+reset_note() {
+  local opts
+  opts=$(set +o)
+  trap 'eval "$opts"; trap - RETURN' RETURN
+  [ -n "${run:-}" ] || return 1
+  [ -n "${art:-}" ] || return 1
+  [ -r "$run/env" ] || return 1
+  rm -rf "$run/vault" || return 1
+  mkdir -p "$run/vault" "$art" || return 1
+  day=$(env $(cat "$run/env") date +%F) || return 1
+}
+reset_note
 ```
 
 The note path is `$run/vault/${day:0:4}/${day:5:2}/$day.md`.
 
-- **File the words.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook note "Dolphins off the port side"`. Exit 0. Stdout is the note path and nothing else. Stderr is empty.
-- **Read it back.** Run `cat` on that path, then `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook today`. The file starts with `---`. It contains `Dolphins off the port side` and `<!-- omalogbook:begin -->`, and it does not contain a position in degrees. `today` prints `$day · Dash`, a line `1.` that contains the same words, and `0.0 nm · fastest 0.0 kn · under way 0 min`.
-- **Mark the anchor.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook note /anchor 25 ft, 5:1`. Exit 0. The file contains `Anchor down: 25 ft, 5:1`. It does not contain `wind` or `HRRR`.
-- **A word that is not a mark.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook note /madeup`. Exit 0. Stderr contains `/madeup isn't a mark`. The file contains `/madeup`.
-- **A blank line.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook note`. Exit 64. Stderr contains `what should the entry say?`. The file is unchanged from the step before.
-- **The flag is words.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook note --vault "$run/not-the-vault" flag check`. Exit 0. `$run/not-the-vault` does not exist. The note under `$run/vault` contains `--vault` and `flag check`.
-- **List the marks.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook presets`. Exit 0. Stdout contains `/depart  left the berth; notes the sunset and starts the trip` and `/berth`.
-- **Proof.** Save each command's stdout, stderr, and exit code under `$art`, plus a copy of the note. `: "${run:?}" && mkdir -p "${EVIDENCE_DIR:-/tmp/omalogbook-evidence}/note" && cp -a "$art/." "${EVIDENCE_DIR:-/tmp/omalogbook-evidence}/note/"`. The clock differs on a later run. Match the words.
+- **File the words.** Run `drive note "Dolphins off the port side"`. Exit 0. Stdout is the note path and nothing else. Stderr is empty.
+- **Read it back.** Run `cat` on that path, then `drive today`. The file starts with `---`. It contains `Dolphins off the port side` and `<!-- omalogbook:begin -->`, and it does not contain a position in degrees. `today` prints `$day · Dash`, a line `1.` that contains the same words, and `0.0 nm · fastest 0.0 kn · under way 0 min`.
+- **Mark the anchor.** Run `drive note /anchor 25 ft, 5:1`. Exit 0. The file contains `Anchor down: 25 ft, 5:1`. It does not contain `wind` or `HRRR`.
+- **A word that is not a mark.** Run `drive note /madeup`. Exit 0. Stderr contains `/madeup isn't a mark`. The file contains `/madeup`.
+- **A blank line.** Run `drive note`. Exit 64. Stderr contains `what should the entry say?`. The file is unchanged from the step before.
+- **The flag is words.** Run `drive note --vault "$run/not-the-vault" flag check`. Exit 0. `$run/not-the-vault` does not exist. The note under `$run/vault` contains `--vault` and `flag check`.
+- **List the marks.** Run `drive presets`. Exit 0. Stdout contains `/depart  left the berth; notes the sunset and starts the trip` and `/berth`.
+- **Proof.** Save each command's stdout, stderr, and exit code under `$art`, plus a copy of the note. `save_evidence note`. The clock differs on a later run. Match the words.
 
 ## Gotchas
 

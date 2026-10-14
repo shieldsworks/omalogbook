@@ -6,23 +6,23 @@ This directory is the source for verifying omalogbook's user-facing behavior. Re
 
 - A debug build of this checkout, launched per `../SKILL.md`, with `HOME`, `XDG_CONFIG_HOME`, and `XDG_RUNTIME_DIR` inside that run's temp directory.
 - `config.toml` sets `vault` to `$run/vault`, `boat` to `Dash`, and `git` to `false`. `TZ` is `UTC`.
-- `$run/env` sets `OMALOGBOOK_BIN` to that debug binary. When `WAYLAND_DISPLAY` was set at launch, the file holds the absolute socket path.
-- Doctor passes, and `omalogbook vault` prints `$run/vault`.
-- Launch has saved `git status --porcelain` and a listing of `$HOME/Logbook`. Cleanup compares both.
+- `$run/env` sets `OMALOGBOOK_BIN` to the realpath of this checkout's debug binary. When `WAYLAND_DISPLAY` was set at launch, the file holds the absolute socket path.
+- Doctor passes, and `drive vault` prints `$run/vault`.
+- Launch has saved `git status --porcelain` and a `find -H` listing of `$HOME/Logbook`. `confirm_drive` returns 1 if either comparison differs.
 - Never drive a vault, config, or hub this run did not create. The one exception is a read-only look at the live `keel.sock`, in `run.md`.
 
 ## Driving conventions
 
 - Run the recipes in the index order below. Each recipe's first command resets the vault it is about to use, so a later recipe does not inherit the previous note.
-- Commands are literal. Keep the prefix, the quoted names, and the flags unchanged.
-- Every `omalogbook` command is this line, with the subcommand in place of `<subcommand>`.
+- Commands are literal. Keep the function, the quoted names, and the flags unchanged.
+- Every `omalogbook` command is `drive` plus the subcommand. `drive` is defined in `../SKILL.md`. The guard and the command are that one function. A failed guard returns 1 and does not start the binary.
 
 ```sh
-: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook <subcommand>
+drive note "Dolphins off the port side"
 ```
 
-`: "${run:?}"` exits the shell when `run` is unset. `[ -r "$run/env" ]` skips the binary when the env file is missing. Do not shorten the line to `omalogbook`.
-- A command that stays running, `./run.sh` or `omalogbook run`, is guarded in the foreground and backgrounded on the next line. See `window.md` and `run.md`.
+`:?` does not exit an interactive shell. The next line would still run, so do not split the guard onto its own line. Do not shorten a command to `omalogbook`.
+- A command that stays running is one function. `open_window` backgrounds `./run.sh`. `follow_hub` backgrounds `omalogbook run`. See `window.md` and `run.md`.
 - `today` and `window` copy `tests/golden/morning` into `$run/vault`. `totals` copies that morning to `$run/morning` and empties `$run/vault`. `note`, `correct`, and a live `run` each empty `$run/vault`.
 - Prefer stable handles. Subcommands, flags, and the words a note prints. Not screen coordinates.
 - Do not delete proof during cleanup.

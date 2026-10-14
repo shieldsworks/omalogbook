@@ -21,25 +21,35 @@
 
 Preconditions:
 
-- Launch and Doctor from `../SKILL.md` are done. `omalogbook vault` prints `$run/vault`.
+- Launch and Doctor from `../SKILL.md` are done. `drive vault` prints `$run/vault`.
 - `art="$run/artifacts/verify/correct"`.
 
 `totals.md` leaves `$run/vault` empty. Empty it again so this note has a clock and no position, and no morning entries underneath.
 
 ```sh
-: "${run:?}" && rm -rf "$run/vault" && mkdir -p "$run/vault" "$art"
-: "${run:?}" && [ -r "$run/env" ] && day=$(env $(cat "$run/env") date +%F)
+reset_correct() {
+  local opts
+  opts=$(set +o)
+  trap 'eval "$opts"; trap - RETURN' RETURN
+  [ -n "${run:-}" ] || return 1
+  [ -n "${art:-}" ] || return 1
+  [ -r "$run/env" ] || return 1
+  rm -rf "$run/vault" || return 1
+  mkdir -p "$run/vault" "$art" || return 1
+  day=$(env $(cat "$run/env") date +%F) || return 1
+}
+reset_correct
 ```
 
 There is no keel socket under `$run/runtime`.
 
-- **File two lines.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook note "Dolphins off the port side"`, then `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook note "Crab boat crossed astern"`. Exit 0 both times.
-- **An index past the end.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook strike 9`. Exit 1. Stderr is `omalogbook: the log for $day has 2 entries`. Both lines are still in the note.
-- **Amend the first.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook today` and copy line 1 without its number. Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook amend 1 --expect "$line" "Dolphins off the starboard side"`. Exit 0. Stdout contains `Dolphins off the starboard side` and the same `**` clock as `$line`. A second `today` shows the new words on line 1 and `Crab boat crossed astern` on line 2.
-- **Strike the first.** Copy the amended line from `today`. Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook strike 1 --expect "$line"`. Exit 0. Stdout contains `~~` and `Dolphins off the starboard side`. `today` still lists two entries.
-- **Erase the second.** Copy line 2. Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook strike 2 --expect "$line" --erase`. Exit 0. Stdout is the note path. `today` no longer contains `Crab boat crossed astern`. The struck dolphin line remains.
-- **A stale expect.** Run `: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook amend 1 --expect "not the line" "nope"`. Exit 1. Stderr contains `that entry has changed since you read it; look again`. `today` does not contain `nope`.
-- **Proof.** Save each command's stdout, stderr, and exit code under `$art`, plus the note after the erase. `: "${run:?}" && mkdir -p "${EVIDENCE_DIR:-/tmp/omalogbook-evidence}/correct" && cp -a "$art/." "${EVIDENCE_DIR:-/tmp/omalogbook-evidence}/correct/"`.
+- **File two lines.** Run `drive note "Dolphins off the port side"`, then `drive note "Crab boat crossed astern"`. Exit 0 both times.
+- **An index past the end.** Run `drive strike 9`. Exit 1. Stderr is `omalogbook: the log for $day has 2 entries`. Both lines are still in the note.
+- **Amend the first.** Run `drive today` and copy line 1 without its number. Run `drive amend 1 --expect "$line" "Dolphins off the starboard side"`. Exit 0. Stdout contains `Dolphins off the starboard side` and the same `**` clock as `$line`. A second `today` shows the new words on line 1 and `Crab boat crossed astern` on line 2.
+- **Strike the first.** Copy the amended line from `today`. Run `drive strike 1 --expect "$line"`. Exit 0. Stdout contains `~~` and `Dolphins off the starboard side`. `today` still lists two entries.
+- **Erase the second.** Copy line 2. Run `drive strike 2 --expect "$line" --erase`. Exit 0. Stdout is the note path. `today` no longer contains `Crab boat crossed astern`. The struck dolphin line remains.
+- **A stale expect.** Run `drive amend 1 --expect "not the line" "nope"`. Exit 1. Stderr contains `that entry has changed since you read it; look again`. `today` does not contain `nope`.
+- **Proof.** Save each command's stdout, stderr, and exit code under `$art`, plus the note after the erase. `save_evidence correct`.
 
 ## Gotchas
 
