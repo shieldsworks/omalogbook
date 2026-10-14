@@ -209,11 +209,14 @@ stop_all() {
 collect_watch() {
   local dest=$1 raw
   raw=$(mktemp "$run/watch.XXXXXX")
+  # GNU find exits 1 when a directory is not readable. pipefail would
+  # abort the drive before it prints run:. The snapshot keeps every
+  # file find could read.
   {
     find "$(dirname "$run")" \
       \( -path "$run" -o -path "$run/*" -o -path "$evidence" -o -path "$evidence/*" \
          -o -path "$repo/.git" -o -path "$repo/.git/*" \) -prune \
-      -o -type f -printf '%p %T@ %s\n'
+      -o -type f -printf '%p %T@ %s\n' 2>/dev/null || true
     if [[ -n ${real_home:-} && -d $real_home ]]; then
       find "$real_home" \
         \( -path "$real_home/.cargo" -o -path "$real_home/.cargo/*" \
@@ -226,7 +229,7 @@ collect_watch() {
            -o -path "$real_home/.local/share/cursor" -o -path "$real_home/.local/share/cursor/*" \
            -o -path "$repo/.git" -o -path "$repo/.git/*" \
         \) -prune \
-        -o -type f -printf '%p %T@ %s\n'
+        -o -type f -printf '%p %T@ %s\n' 2>/dev/null || true
     fi
   } | LC_ALL=C sort -u >"$raw"
   mv "$raw" "$dest"
