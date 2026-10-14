@@ -4,36 +4,29 @@ This directory is the source for verifying omalogbook's user-facing behavior. Re
 
 ## Baseline preconditions
 
-- A debug build of this checkout, launched per `../SKILL.md`, with `HOME`, `XDG_CONFIG_HOME`, and `XDG_RUNTIME_DIR` inside that run's temp directory.
+- A debug build of this checkout, launched by `env -u BASH_ENV bash --noprofile --norc ../drive.sh`. `HOME`, `XDG_CONFIG_HOME`, and `XDG_RUNTIME_DIR` are passed on each command and point inside that run's temp directory. The shell that starts the drive does not export them.
 - `config.toml` sets `vault` to `$run/vault`, `boat` to `Dash`, and `git` to `false`. `TZ` is `UTC`.
-- `$run/env` sets `OMALOGBOOK_BIN` to the realpath of this checkout's debug binary. When `WAYLAND_DISPLAY` was set at launch, the file holds the absolute socket path.
-- Doctor passes, and `drive vault` prints `$run/vault`.
-- Launch has saved `git status --porcelain` and a `find -H` listing of `$HOME/Logbook`. `confirm_drive` returns 1 if either comparison differs.
+- The binary is the realpath of `./target/debug/omalogbook`. The window gets that path as `OMALOGBOOK_BIN`. When `WAYLAND_DISPLAY` was set, the window command gets the absolute socket path.
+- Doctor passes, and `vault` prints `$run/vault`. A vault that canonicalizes outside the run directory never starts the binary.
+- The drive snapshots `git status --porcelain` and the files under `/tmp` and the sailor's home. `confirm_drive` fails the drive if either comparison differs. Cargo, rustup, npm, and editor caches are not part of the home walk.
 - Never drive a vault, config, or hub this run did not create. The one exception is a read-only look at the live `keel.sock`, in `run.md`.
 
 ## Driving conventions
 
-- Run the recipes in the index order below. Each recipe's first command resets the vault it is about to use, so a later recipe does not inherit the previous note.
-- Commands are literal. Keep the function, the quoted names, and the flags unchanged.
-- Every `omalogbook` command is `drive` plus the subcommand. `drive` is defined in `../SKILL.md`. The guard and the command are that one function, in one `&&` list. A failed guard returns 1 and does not start the binary.
-- A background command appends its pid to `$run/pids`. `stop_drive` kills every line. A failed guard does not.
-
-```sh
-drive note "Dolphins off the port side"
-```
-
-`:?` does not exit an interactive shell. The next line would still run, so do not split the guard onto its own line. Do not shorten a command to `omalogbook`.
-- A command that stays running is one function. `open_window` backgrounds `./run.sh`. `follow_hub` backgrounds `omalogbook run`. See `window.md` and `run.md`.
+- The drive is one child process. Do not paste the recipes into the shell you mean to keep, and do not source `drive.sh`.
+- Run the recipes in the index order below. Each recipe resets the vault it is about to use, so a later recipe does not inherit the previous note.
+- Commands inside `drive.sh` are literal. Keep the quoted names and the flags unchanged.
+- A failed feature stops the drive. `window` and `run` exit non-zero when Quickshell or the live hub is absent, so name the features you can finish when you need a zero exit.
 - `today` and `window` copy `tests/golden/morning` into `$run/vault`. `totals` copies that morning to `$run/morning` and empties `$run/vault`. `note`, `correct`, and a live `run` each empty `$run/vault`.
 - Prefer stable handles. Subcommands, flags, and the words a note prints. Not screen coordinates.
-- Do not delete proof during cleanup.
+- Do not delete proof during cleanup. The evidence directory stays. The run directory is removed only after the copy contains this run's marker.
 
 ## Proof and skip reporting
 
 - CLI proof is the command, stdout, stderr, and the exit code.
 - Mutation proof is a second read of the note on disk.
-- Window proof, when Quickshell runs on Hyprland, is a `grim` screenshot with the log visible.
-- Window proof, when Quickshell does not run, is the `./run.sh` transcript plus `today --json` and `presets --json`. Those do not stand in for the screenshot.
+- Window proof, when Quickshell runs on Hyprland and the window is alive for the whole `grim`, is a `grim` image. When `quickshell` or `grim` is missing, the drive writes `miss.txt` and exits non-zero. That file is not a screenshot.
+- `scripts/verify.sh engine` passes this map only when `All engine-path checks passed.` is in the transcript and `Qt6 QML dev packages not installed.` is in neither stream.
 - Record the feature id with every artifact.
 - An unreachable path is reported with the command tried and the unmet precondition. It is never reported as verified through a different path.
 
@@ -52,5 +45,5 @@ Each feature file starts with an H1 and one paragraph, then these four H2s, in o
 - [Read the day](./today.md) prints one day, including the pinned morning, and the path an editor opens.
 - [Add up the log](./totals.md) sums every note, and can point `--vault` at another folder.
 - [Correct an entry](./correct.md) amends words, strikes a line, or erases one.
-- [The log window](./window.md) is `./run.sh`. Without Quickshell, grim, or Qt6 the painted window is unreachable. `open_window` and `drive_engine` record that and return 1. The substitute is not a pass.
-- [Keep the watch](./run.md) is `omalogbook run`. It needs a live omakeel and is not driven by inventing a socket.
+- [The log window](./window.md) is `./run.sh`. Without Quickshell, grim, or Qt6 the painted window is unreachable. The drive records that and exits non-zero. The substitute is not a pass.
+- [Keep the watch](./run.md) is `omalogbook run`. It needs a live omakeel. A socket this drive created is not that proof. `confine`, inside `drive.sh`, checks the listener and a protocol line with a stand-in.

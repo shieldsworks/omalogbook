@@ -21,34 +21,21 @@
 
 Preconditions:
 
-- Launch and Doctor from `../SKILL.md` are done. `drive vault` prints `$run/vault`.
-- `art="$run/artifacts/verify/correct"`.
+- Run it with the drive in `../SKILL.md`. `vault` prints `$run/vault`.
 
-`totals.md` leaves `$run/vault` empty. Empty it again so this note has a clock and no position, and no morning entries underneath.
+The vault starts empty, so this note has a clock and no position, and no morning entries underneath. There is no keel socket under `$run/runtime`.
+
+- **File two lines.** `omalogbook note "Dolphins off the port side"`, then `omalogbook note "Crab boat crossed astern"`. Exit 0 both times.
+- **An index past the end.** `omalogbook strike 9`. Exit 1. Stderr contains `has 2 entries`. Both lines are still in the note.
+- **Amend the first.** Take line 1 from `omalogbook today` without its number. `omalogbook amend 1 --expect "$line" "Dolphins off the starboard side"`. Exit 0. Stdout contains `Dolphins off the starboard side` and the same `**` clock as `$line`. A second `today` shows the new words on line 1 and `Crab boat crossed astern` on line 2.
+- **Strike the first.** Copy the amended line from `today`. `omalogbook strike 1 --expect "$line"`. Exit 0. Stdout contains `~~` and `Dolphins off the starboard side`. `today` still lists two entries.
+- **Erase the second.** Copy line 2. `omalogbook strike 2 --expect "$line" --erase`. Exit 0. Stdout is the note path. `today` no longer contains `Crab boat crossed astern`. The struck dolphin line remains.
+- **A stale expect.** `omalogbook amend 1 --expect "not the line" "nope"`. Exit 1. Stderr contains `that entry has changed since you read it; look again`. `today` does not contain `nope`.
+- **Proof.** `record` saves each command under `verify/correct-*/`, plus the note after the erase.
 
 ```sh
-reset_correct() {
-  local saved=$- prev letters
-  prev=$(trap -p RETURN)
-  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
-  [ -n "${run:-}" ] || return 1
-  [ -n "${art:-}" ] || return 1
-  rm -rf "$run/vault" || return 1
-  mkdir -p "$run/vault" "$art" || return 1
-  env_pins_run && day=$(env $(cat "$run/env") date +%F) || return 1
-}
-reset_correct
+env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omalogbook/drive.sh correct
 ```
-
-There is no keel socket under `$run/runtime`.
-
-- **File two lines.** Run `drive note "Dolphins off the port side"`, then `drive note "Crab boat crossed astern"`. Exit 0 both times.
-- **An index past the end.** Run `drive strike 9`. Exit 1. Stderr is `omalogbook: the log for $day has 2 entries`. Both lines are still in the note.
-- **Amend the first.** Run `drive today` and copy line 1 without its number. Run `drive amend 1 --expect "$line" "Dolphins off the starboard side"`. Exit 0. Stdout contains `Dolphins off the starboard side` and the same `**` clock as `$line`. A second `today` shows the new words on line 1 and `Crab boat crossed astern` on line 2.
-- **Strike the first.** Copy the amended line from `today`. Run `drive strike 1 --expect "$line"`. Exit 0. Stdout contains `~~` and `Dolphins off the starboard side`. `today` still lists two entries.
-- **Erase the second.** Copy line 2. Run `drive strike 2 --expect "$line" --erase`. Exit 0. Stdout is the note path. `today` no longer contains `Crab boat crossed astern`. The struck dolphin line remains.
-- **A stale expect.** Run `drive amend 1 --expect "not the line" "nope"`. Exit 1. Stderr contains `that entry has changed since you read it; look again`. `today` does not contain `nope`.
-- **Proof.** Save each command's stdout, stderr, and exit code under `$art`, plus the note after the erase. `save_evidence correct`.
 
 ## Gotchas
 
@@ -56,4 +43,4 @@ There is no keel socket under `$run/runtime`.
 - `--expect` matches after collapsing whitespace. A line that only rewrapped still matches. Different words do not.
 - The tildes start immediately after the bold clock. They include `UTC`, not only the words.
 - Striking a line that is already struck exits 1. Stderr is `omalogbook: that entry is already struck`.
-- Amend and strike ignore `--vault`, the same way `note` does.
+- Amend and strike ignore `--vault`, the same way `note` does. A `--vault` path outside the run directory still never starts the binary.

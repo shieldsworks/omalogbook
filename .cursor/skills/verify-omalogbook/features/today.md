@@ -21,35 +21,22 @@
 
 Preconditions:
 
-- Launch and Doctor from `../SKILL.md` are done. `drive vault` prints `$run/vault`.
-- `art="$run/artifacts/verify/today"`.
+- Run it with the drive in `../SKILL.md`. `vault` prints `$run/vault`.
 
-Replace the vault with the pinned morning. The checkout copy stays untouched.
+The drive replaces the vault with the pinned morning. The checkout copy stays untouched. `git status --porcelain -- tests/golden/morning` is empty after the drive.
+
+- **Read 13 September 2026.** `omalogbook today --date 2026-09-13`. Exit 0. Stdout contains `2026-09-13 · Dash`, `log opened`, `under way`, `stopped`, `1.0 nm`, and `under way 19 min`.
+- **The track is still there.** `$run/vault/tracks/2026-09-13-120100.gpx` exists. The note links that file. The command does not rewrite it.
+- **JSON for the window.** `omalogbook today --date 2026-09-13 --json`. Exit 0. Stdout contains `"v":1`, `"date":"2026-09-13"`, `"boat":"Dash"`, `"distanceNm":1.0`, and `under way`.
+- **Where the editor opens.** `omalogbook path --date 2026-09-13`. Exit 0. Stdout is `$run/vault/2026/09/2026-09-13.md`.
+- **A day with no note.** `omalogbook today --date 2026-01-02`. Exit 0. Stdout is `2026-01-02 · Dash` and nothing else. `$run/vault/2026/01/2026-01-02.md` does not exist.
+- **The path of a day with no note.** `omalogbook path --date 2026-01-02`. Exit 0. Stdout is `$run/vault/2026/01/2026-01-02.md` and nothing else. That file still does not exist.
+- **A bad date.** `omalogbook today --date Tuesday`. Exit 64. Stderr contains `--date wants a day like 2026-09-18`.
+- **Proof.** `record` saves each command under `verify/today-*/`.
 
 ```sh
-reset_today() {
-  local saved=$- prev letters
-  prev=$(trap -p RETURN)
-  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
-  [ -n "${run:-}" ] || return 1
-  [ -n "${art:-}" ] || return 1
-  rm -rf "$run/vault" || return 1
-  mkdir -p "$run/vault" "$art" || return 1
-  cp -a tests/golden/morning/. "$run/vault/" || return 1
-}
-reset_today
+env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omalogbook/drive.sh today
 ```
-
-`git status --porcelain -- tests/golden/morning` is empty after the drive.
-
-- **Read 13 September 2026.** Run `drive today --date 2026-09-13`. Exit 0. Stdout contains `2026-09-13 · Dash`, `log opened`, `under way`, `stopped`, `1.0 nm`, and `under way 19 min`.
-- **The track is still there.** Run `test -f "$run/vault/tracks/2026-09-13-120100.gpx"`. Exit 0. The note links that file. The command does not rewrite it.
-- **JSON for the window.** Run `drive today --date 2026-09-13 --json`. Exit 0. Stdout contains `"v":1`, `"date":"2026-09-13"`, `"boat":"Dash"`, `"distanceNm":1.0`, and `under way`.
-- **Where the editor opens.** Run `drive path --date 2026-09-13`. Exit 0. Stdout is `$run/vault/2026/09/2026-09-13.md`.
-- **A day with no note.** Run `drive today --date 2026-01-02`. Exit 0. Stdout is `2026-01-02 · Dash` and nothing else. `$run/vault/2026/01/2026-01-02.md` does not exist.
-- **The path of a day with no note.** Run `drive path --date 2026-01-02`. Exit 0. Stdout is `$run/vault/2026/01/2026-01-02.md` and nothing else. That file still does not exist.
-- **A bad date.** Run `drive today --date Tuesday`. Exit 64. Stderr contains `--date wants a day like 2026-09-18`.
-- **Proof.** Save each command's stdout, stderr, and exit code under `$art`. `save_evidence today`.
 
 ## Gotchas
 
