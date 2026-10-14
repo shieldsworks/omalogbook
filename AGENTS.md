@@ -26,7 +26,7 @@ Commands:
 - `scripts/verify.sh`
 - `mise goldens` byte-compares `tests/golden/morning` under `TZ=UTC`. `BLESS=1 mise goldens` rewrites that directory only.
 
-To drive the binary the way a user does, use `.cursor/skills/verify/SKILL.md` and the feature map in `.cursor/skills/verify/features/`.
+To drive the binary the way a user does, use `.cursor/skills/verify-omalogbook/SKILL.md` and the feature map in `.cursor/skills/verify-omalogbook/features/`.
 
 ## The gates are not yours to move
 
