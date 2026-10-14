@@ -6,16 +6,25 @@ This directory is the source for verifying omalogbook's user-facing behavior. Re
 
 - A debug build of this checkout, launched per `../SKILL.md`, with `HOME`, `XDG_CONFIG_HOME`, and `XDG_RUNTIME_DIR` inside that run's temp directory.
 - `config.toml` sets `vault` to `$run/vault`, `boat` to `Dash`, and `git` to `false`. `TZ` is `UTC`.
+- `$run/env` sets `OMALOGBOOK_BIN` to that debug binary. When `WAYLAND_DISPLAY` was set at launch, the file holds the absolute socket path.
 - Doctor passes, and `omalogbook vault` prints `$run/vault`.
-- Never drive a vault, config, or hub this run did not create.
+- Launch has saved `git status --porcelain` and a listing of `$HOME/Logbook`. Cleanup compares both.
+- Never drive a vault, config, or hub this run did not create. The one exception is a read-only look at the live `keel.sock`, in `run.md`.
 
 ## Driving conventions
 
-- Start every recipe from the baseline unless its preconditions say otherwise.
-- Commands are literal. Keep quoted names and flags unchanged.
-- Every `omalogbook` command runs as `env $(cat "$run/env") ./target/debug/omalogbook`, written `omalogbook` below.
+- Run the recipes in the index order below. Each recipe's first command resets the vault it is about to use, so a later recipe does not inherit the previous note.
+- Commands are literal. Keep the prefix, the quoted names, and the flags unchanged.
+- Every `omalogbook` command is this line, with the subcommand in place of `<subcommand>`.
+
+```sh
+: "${run:?}" && [ -r "$run/env" ] && env $(cat "$run/env") ./target/debug/omalogbook <subcommand>
+```
+
+`: "${run:?}"` exits the shell when `run` is unset. `[ -r "$run/env" ]` skips the binary when the env file is missing. Do not shorten the line to `omalogbook`.
+- A command that stays running, `./run.sh` or `omalogbook run`, is guarded in the foreground and backgrounded on the next line. See `window.md` and `run.md`.
+- `today` and `window` copy `tests/golden/morning` into `$run/vault`. `totals` copies that morning to `$run/morning` and empties `$run/vault`. `note`, `correct`, and a live `run` each empty `$run/vault`.
 - Prefer stable handles. Subcommands, flags, and the words a note prints. Not screen coordinates.
-- A recipe that reads the pinned morning replaces `$run/vault` with a copy of `tests/golden/morning`. A recipe that writes starts from an empty `$run/vault`. Do not mix the two.
 - Do not delete proof during cleanup.
 
 ## Proof and skip reporting
