@@ -47,3 +47,8 @@ fn outside_write_without_a_copy_prints_evidence_none() {
 fn git_index_mtime_is_not_an_outside_write() {
     assert_ok("index", guard("index").unwrap());
 }
+
+#[test]
+fn pause_reaches_run_when_the_watch_cannot_read_a_directory() {
+    assert_ok("unreadable-walk", guard("unreadable-walk").unwrap());
+}

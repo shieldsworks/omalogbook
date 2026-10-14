@@ -335,6 +335,38 @@ def case_outside_unreadable():
             subprocess.call(["rm", "-rf", run])
 
 
+def case_unreadable_walk():
+    env = base_env()
+    blocked = Path(tempfile.mkdtemp(prefix="omalogbook-unreadable.", dir="/tmp"))
+    secret = blocked / "secret"
+    secret.mkdir()
+    os.chmod(secret, 0)
+    drive = None
+    evidence = None
+    run = ""
+    try:
+        drive, evidence = start_pause(env)
+        run = run_path(drive.text())
+        code = interrupt(drive)
+        text = drive.text()
+        if not run.startswith("/"):
+            fail(f"unreadable directory aborted pause before run:\n{text}")
+        if code != 143:
+            fail(f"unreadable walk exit {code}, want 143\n{text}")
+    finally:
+        try:
+            os.chmod(secret, 0o755)
+        except OSError:
+            pass
+        subprocess.call(["rm", "-rf", str(blocked)])
+        if drive is not None:
+            drive.close()
+        if evidence is not None:
+            subprocess.call(["rm", "-rf", str(evidence)])
+        if run:
+            subprocess.call(["rm", "-rf", run])
+
+
 def case_index():
     env = base_env()
     home = Path(tempfile.mkdtemp(prefix="idxhome.", dir="/tmp"))
@@ -400,6 +432,7 @@ CASES = {
     "outside": case_outside,
     "outside-unreadable": case_outside_unreadable,
     "index": case_index,
+    "unreadable-walk": case_unreadable_walk,
 }
 
 
