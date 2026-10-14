@@ -6,7 +6,7 @@ This directory is the source for verifying omalogbook's user-facing behavior. Re
 
 - A debug build of this checkout, launched by `env -u BASH_ENV bash --noprofile --norc ../drive.sh`. `HOME`, `XDG_CONFIG_HOME`, and `XDG_RUNTIME_DIR` are passed on each command and point inside that run's temp directory. The shell that starts the drive does not export them.
 - `config.toml` sets `vault` to `$run/vault`, `boat` to `Dash`, and `git` to `false`. `TZ` is `UTC`.
-- The binary is the realpath of `./target/debug/omalogbook`. The window gets that path as `OMALOGBOOK_BIN`. When `WAYLAND_DISPLAY` was set, the window command gets the absolute socket path.
+- The binary is the realpath of `./target/debug/omalogbook`. The drive unsets an inherited `OMALOGBOOK_BIN` at start. The window command sets that name to the debug binary. When `WAYLAND_DISPLAY` was set, the window command gets the absolute socket path.
 - Doctor passes, and `vault` prints `$run/vault`. A vault that canonicalizes outside the run directory never starts the binary.
 - The drive snapshots `git status --porcelain` and the files under `/tmp` and the sailor's home. `confirm_drive` fails the drive if either comparison differs. Cargo, rustup, npm, and editor caches are not part of the home walk.
 - Never drive a vault, config, or hub this run did not create. The one exception is a read-only look at the live `keel.sock`, in `run.md`.

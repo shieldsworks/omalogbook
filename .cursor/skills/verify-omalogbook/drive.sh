@@ -30,7 +30,9 @@ pause_pgid=
 inherit_pgid=
 copy_failed=0
 kept_run=
+proved=0
 launch_n=0
+spawned_pids=
 SOCKET=
 
 if [[ -n ${EVIDENCE_DIR:-} ]]; then
@@ -40,6 +42,15 @@ else
   evidence=$(mktemp -d /tmp/omalogbook-verify-evidence.XXXXXX)
 fi
 
+# Parent exports are not the window's binary or its size. The window
+# command sets OMALOGBOOK_BIN itself.
+for seam in OMALOGBOOK_BIN OMALOGBOOK_THEME_DIR OMALOGBOOK_WIDTH OMALOGBOOK_HEIGHT; do
+  if [[ -n ${!seam:-} ]]; then
+    printf 'ignored %s\n' "$seam" >>"$evidence/seams.txt"
+    unset "$seam"
+  fi
+done
+
 add_pgid() {
   local pgid=${1:-}
   [[ -n $pgid && $pgid != "$self_pgid" ]] || return 0
@@ -47,6 +58,30 @@ add_pgid() {
     *" $pgid "*) ;;
     *) all_pgids="$all_pgids $pgid" ;;
   esac
+}
+
+note_spawn() {
+  local pid=${1:-}
+  [[ -n $pid && $pid != "$self_pgid" ]] || return 0
+  case " $spawned_pids " in
+    *" $pid "*) ;;
+    *) spawned_pids="$spawned_pids $pid" ;;
+  esac
+  add_pgid "$pid"
+}
+
+stop_spawned() {
+  local pid
+  for pid in $spawned_pids; do
+    [[ -n $pid && $pid != "$self_pgid" ]] || continue
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  for pid in $spawned_pids; do
+    [[ -n $pid && $pid != "$self_pgid" ]] || continue
+    kill -KILL -- "-$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+  done
 }
 
 note_tree() {
@@ -72,7 +107,7 @@ start_session() {
   started_pid=$!
   disown "$started_pid" 2>/dev/null || true
   set -m
-  add_pgid "$started_pid"
+  note_spawn "$started_pid"
 }
 
 signal_pgids() {
@@ -123,6 +158,7 @@ stop_groups() {
 stop_all() {
   local pgid pid
   local -a ids=()
+  stop_spawned
   note_tree "${follow_pid:-}"
   note_tree "${hub_pid:-}"
   note_tree "${window_pid:-}"
@@ -211,6 +247,7 @@ archive_current() {
     fi
   fi
   if [[ $ok -eq 1 ]]; then
+    proved=1
     old=$run
     run=
     rm -rf "$old"
@@ -229,6 +266,7 @@ finish() {
   set +e
   trap '' INT TERM
   trap - EXIT
+  stop_spawned
   if [[ -n ${run:-} && -d $run && -f ${run:-}/watch-before ]]; then
     if ! confirm_drive; then
       printf 'wrote outside %s\n' "$run" >&2
@@ -238,10 +276,14 @@ finish() {
     fi
   fi
   archive_current
-  if [[ $copy_failed -eq 1 && $status -eq 0 ]]; then
-    status=1
+  if [[ $copy_failed -eq 1 || $proved -ne 1 ]]; then
+    if [[ $status -eq 0 ]]; then
+      status=1
+    fi
+    printf 'evidence: none\n'
+  else
+    printf 'evidence: %s\n' "$evidence"
   fi
-  printf 'evidence: %s\n' "$evidence"
   exit "$status"
 }
 trap finish EXIT
@@ -303,6 +345,10 @@ launch_bin() {
   require_vault || return 1
   require_cli_vaults "$@" || return 1
   env \
+    -u OMALOGBOOK_BIN \
+    -u OMALOGBOOK_THEME_DIR \
+    -u OMALOGBOOK_WIDTH \
+    -u OMALOGBOOK_HEIGHT \
     HOME="$run/home" \
     XDG_CONFIG_HOME="$run/config" \
     XDG_RUNTIME_DIR="$run/runtime" \
@@ -805,6 +851,9 @@ drive_window() {
     wayland=$runtime/$wayland
   fi
   cmd=(env
+    -u OMALOGBOOK_THEME_DIR
+    -u OMALOGBOOK_WIDTH
+    -u OMALOGBOOK_HEIGHT
     HOME="$run/home"
     XDG_CONFIG_HOME="$run/config"
     XDG_RUNTIME_DIR="$run/runtime"
@@ -865,7 +914,7 @@ drive_window() {
       grim_pid=$!
       grim_pgid=$grim_pid
       set -m
-      add_pgid "$grim_pgid"
+      note_spawn "$grim_pid"
       set +e
       wait "$grim_pid"
       code=$?
@@ -900,6 +949,10 @@ drive_window() {
   chmod 700 "$runtime"
   inside_run "$runtime"
   record window-engine env \
+    -u OMALOGBOOK_BIN \
+    -u OMALOGBOOK_THEME_DIR \
+    -u OMALOGBOOK_WIDTH \
+    -u OMALOGBOOK_HEIGHT \
     HOME="$run/home" \
     XDG_CONFIG_HOME="$run/config" \
     XDG_RUNTIME_DIR="$runtime" \
@@ -953,6 +1006,10 @@ drive_run() {
   mkdir -p "$dir"
   start_session "$dir/stdout.txt" "$dir/stderr.txt" \
     env \
+    -u OMALOGBOOK_BIN \
+    -u OMALOGBOOK_THEME_DIR \
+    -u OMALOGBOOK_WIDTH \
+    -u OMALOGBOOK_HEIGHT \
     HOME="$run/home" \
     XDG_CONFIG_HOME="$run/config" \
     XDG_RUNTIME_DIR="$run/runtime" \
@@ -1070,7 +1127,9 @@ PY
 drive_pause() {
   local art
   art=$(art_dir pause)
-  start_session "$art/stdout.txt" "$art/stderr.txt" sleep 120
+  # The spawned pid ignores TERM. Only the cleanup KILL ends it.
+  start_session "$art/stdout.txt" "$art/stderr.txt" \
+    python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(120)'
   pause_pid=$started_pid
   pause_pgid=$started_pid
   printf 'sleeper:%s\nrun:%s\n' "$pause_pid" "$run"
@@ -1083,6 +1142,10 @@ start_follow() {
   mkdir -p "$art"
   start_session "$art/stdout.txt" "$art/stderr.txt" \
     env \
+    -u OMALOGBOOK_BIN \
+    -u OMALOGBOOK_THEME_DIR \
+    -u OMALOGBOOK_WIDTH \
+    -u OMALOGBOOK_HEIGHT \
     HOME="$run/home" \
     XDG_CONFIG_HOME="$run/config" \
     XDG_RUNTIME_DIR="$run/runtime" \
