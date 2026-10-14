@@ -15,7 +15,8 @@ This directory is the source for verifying omalogbook's user-facing behavior. Re
 
 - Run the recipes in the index order below. Each recipe's first command resets the vault it is about to use, so a later recipe does not inherit the previous note.
 - Commands are literal. Keep the function, the quoted names, and the flags unchanged.
-- Every `omalogbook` command is `drive` plus the subcommand. `drive` is defined in `../SKILL.md`. The guard and the command are that one function. A failed guard returns 1 and does not start the binary.
+- Every `omalogbook` command is `drive` plus the subcommand. `drive` is defined in `../SKILL.md`. The guard and the command are that one function, in one `&&` list. A failed guard returns 1 and does not start the binary.
+- A background command appends its pid to `$run/pids`. `stop_drive` kills every line. A failed guard does not.
 
 ```sh
 drive note "Dolphins off the port side"
@@ -51,5 +52,5 @@ Each feature file starts with an H1 and one paragraph, then these four H2s, in o
 - [Read the day](./today.md) prints one day, including the pinned morning, and the path an editor opens.
 - [Add up the log](./totals.md) sums every note, and can point `--vault` at another folder.
 - [Correct an entry](./correct.md) amends words, strikes a line, or erases one.
-- [The log window](./window.md) is `./run.sh`. Without Quickshell the painted window is unreachable. The file names the substitute that was run.
+- [The log window](./window.md) is `./run.sh`. Without Quickshell, grim, or Qt6 the painted window is unreachable. `open_window` and `drive_engine` record that and return 1. The substitute is not a pass.
 - [Keep the watch](./run.md) is `omalogbook run`. It needs a live omakeel and is not driven by inventing a socket.

@@ -26,9 +26,9 @@ Preconditions:
 
 ```sh
 probe_hub() {
-  local opts hub_runtime
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters hub_runtime
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   [ -n "${run:-}" ] || return 1
   [ -n "${art:-}" ] || return 1
   mkdir -p "$art" || return 1
@@ -51,13 +51,13 @@ probe_hub
 ```
 
 - **Do not start a blind follow.** When `SOCKET` is unset, do not call `follow_hub`. The command that was not run is `omalogbook run --socket "$SOCKET" --no-git`. `run` reconnects until it is killed. Report `run-follow` as not driven, with that command and the missing hub.
-- **Follow, when the socket is there.** Empty `$run/vault` so this watch does not append to an earlier recipe. `follow_hub` checks `run`, `$run/env`, and the socket, then backgrounds `omalogbook run` in the same function. A failed check calls `stop_pid` and returns 1. It does not start the binary.
+- **Follow, when the socket is there.** Empty `$run/vault` so this watch does not append to an earlier recipe. `follow_hub` checks `run`, `env_pins_run`, and the socket, then backgrounds `omalogbook run` in the same `&&` list. A failed check returns 1 and does not append a pid. It does not start the binary, and it does not kill a pid already in `$run/pids`.
 
 ```sh
 reset_run() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   [ -n "${run:-}" ] || return 1
   rm -rf "$run/vault" || return 1
   mkdir -p "$run/vault" || return 1
@@ -66,18 +66,14 @@ reset_run() {
 
 ```sh
 follow_hub() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
-  if [ -z "${run:-}" ] || [ -z "${art:-}" ] || [ ! -r "$run/env" ] || [ ! -S "${SOCKET:-}" ]; then
-    stop_pid
-    return 1
-  fi
-  env $(cat "$run/env") ./target/debug/omalogbook run --socket "$SOCKET" --no-git >"$art/run.out" 2>"$art/run.err" &
-  printf '%s\n' "$!" > "$run/pid" || {
-    kill "$!" 2>/dev/null || true
-    wait "$!" 2>/dev/null || true
-    return 1
+  local saved=$- prev letters child
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
+  [ -n "${run:-}" ] && [ -n "${art:-}" ] && env_pins_run && [ -S "${SOCKET:-}" ] && {
+    env $(cat "$run/env") ./target/debug/omalogbook run --socket "$SOCKET" --no-git >"$art/run.out" 2>"$art/run.err" &
+    child=$!
+    printf '%s\n' "$child" >> "$run/pids" || { drop_pid "$child"; return 1; }
+    hub_pid=$child
   }
 }
 ```
@@ -91,39 +87,96 @@ When `SOCKET` is set, run `reset_run`, then `follow_hub`, then `run_ready`.
 `run_ready` is ready only when both of these are true.
 
 - `$art/run.out` contains `omalogbook:` and the note path under `$run/vault`.
-- `/proc/net/unix` lists `$SOCKET` in state `03`, and the pid in `$run/pid` has a socket fd in that same state.
+- `pid_on_socket` says the pid in `hub_pid` has a client fd for `$SOCKET`, and the process on the other end still holds a state `03` inode for that path.
 
-State `03` is an established unix connection. A live pid with only the path line, and no state `03` for `$SOCKET`, is the reconnect loop. It is not a connection. Give the hub about 15 seconds. If `run_ready` returns 1, report `run-follow` as not driven. After a fix, the note on disk contains `log opened` or `under way`. `stop_drive` stops `$run/pid` either way.
+`ss -xp` prints the peer inode as `0` on this kernel. A diag dump of the unix family returns `ENOENT`, so the peer column cannot pair the fds. `pidfd_getfd` duplicates this pid's socket fd. `getpeername` on that fd is `$SOCKET` only for the client of this path. `SO_PEERCRED` is the other process. That process has to hold the state `03` inode from `/proc/net/unix`. An inherited fd whose peer name is empty does not count. A state `03` row for the path from some other client does not count. After the listener and the accepted fd close, the inode is gone, and a pid that still has some other state `03` socket is not ready.
+
+State `03` is an established unix connection. A live pid with only the path line is the reconnect loop. It is not a connection. Give the hub about 15 seconds. If `run_ready` returns 1, report `run-follow` as not driven. After a fix, the note on disk contains `log opened` or `under way`. `stop_drive` kills every pid in `$run/pids`.
+
+`pid_on_socket` does not set a trap. `pidfd_open` is syscall 434 and `pidfd_getfd` is syscall 438 on x86_64 and aarch64.
+
+```sh
+pid_on_socket() {
+  [ -n "${1:-}" ] || return 1
+  [ -n "${SOCKET:-}" ] || return 1
+  python3 - "$1" "$SOCKET" <<'PY'
+import os
+import socket
+import struct
+import sys
+import ctypes
+
+pid, path = sys.argv[1], sys.argv[2]
+accepted = set()
+with open("/proc/net/unix") as fh:
+    next(fh)
+    for line in fh:
+        parts = line.split()
+        if len(parts) >= 8 and parts[5] == "03" and parts[7] == path:
+            accepted.add(parts[6])
+if not accepted:
+    raise SystemExit(1)
+libc = ctypes.CDLL(None, use_errno=True)
+try:
+    names = os.listdir(f"/proc/{pid}/fd")
+except OSError:
+    raise SystemExit(1)
+for name in names:
+    try:
+        target = os.readlink(f"/proc/{pid}/fd/{name}")
+    except OSError:
+        continue
+    if not (target.startswith("socket:[") and target.endswith("]")):
+        continue
+    inode = target[len("socket:[") : -1]
+    if inode in accepted:
+        continue
+    pidfd = libc.syscall(434, int(pid), 0)
+    if pidfd < 0:
+        continue
+    got = libc.syscall(438, pidfd, int(name), 0)
+    os.close(pidfd)
+    if got < 0:
+        continue
+    try:
+        held = socket.fromfd(got, socket.AF_UNIX, socket.SOCK_STREAM)
+        peername = held.getpeername()
+        cred = held.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        peer = struct.unpack("III", cred)[0]
+    except OSError:
+        os.close(got)
+        continue
+    os.close(got)
+    if peername != path:
+        continue
+    try:
+        peer_names = os.listdir(f"/proc/{peer}/fd")
+    except OSError:
+        continue
+    for pn in peer_names:
+        try:
+            pt = os.readlink(f"/proc/{peer}/fd/{pn}")
+        except OSError:
+            continue
+        if pt.startswith("socket:[") and pt[len("socket:[") : -1] in accepted:
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+```
 
 ```sh
 run_ready() {
-  local opts pid ready=no i fd target inode state connected
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters pid ready=no i
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   [ -n "${run:-}" ] || return 1
   [ -n "${art:-}" ] || return 1
   [ -n "${SOCKET:-}" ] || return 1
-  [ -f "$run/pid" ] || return 1
-  pid=$(cat "$run/pid") || return 1
+  [ -n "${hub_pid:-}" ] || return 1
+  pid=$hub_pid
   for i in $(seq 1 15); do
-    connected=no
-    if awk -v sock="$SOCKET" '$6 == "03" && $8 == sock { found = 1 } END { exit found ? 0 : 1 }' /proc/net/unix; then
-      for fd in /proc/"$pid"/fd/*; do
-        target=$(readlink "$fd" 2>/dev/null || true)
-        case $target in
-          socket:\[*)
-            inode=${target#socket:[}
-            inode=${inode%]}
-            state=$(awk -v ino="$inode" '$7 == ino { print $6; exit }' /proc/net/unix)
-            if [ "$state" = "03" ]; then
-              connected=yes
-              break
-            fi
-            ;;
-        esac
-      done
-    fi
-    if [ "$connected" = yes ] && grep -F "omalogbook: $run/vault/" "$art/run.out" >/dev/null; then
+    if pid_on_socket "$pid" && grep -F "omalogbook: $run/vault/" "$art/run.out" >/dev/null; then
       ready=yes
       break
     fi

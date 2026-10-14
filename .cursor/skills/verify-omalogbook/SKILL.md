@@ -15,26 +15,59 @@ Resolve `WAYLAND_DISPLAY` before the env file replaces `XDG_RUNTIME_DIR`. A rela
 
 `OMALOGBOOK_BIN` is the realpath of `./target/debug/omalogbook`. The commands below start `./target/debug/omalogbook` from the repo root. The window reads `OMALOGBOOK_BIN`.
 
-Each fenced command is one function. The function saves `set +o` and restores those options with a RETURN trap, then clears that trap. A failed check is `return 1`. Leave `set -e` and `set -u` off. Both skip the RETURN trap, and `set -e` inside a function exits an interactive shell. After the function returns, `$-` matches the shell from before the call, and `trap -p` does not list this function's RETURN trap.
+Each fenced command is one function. The function saves `$-` and restores the settable letters with a RETURN trap. `set` rejects `i` and `s`, so those two stay as the shell already has them. The trap puts back the RETURN trap `trap -p` showed on the way in. A failed check is `return 1`. Leave `set -e` and `set -u` off in the function body. Both skip the RETURN trap, and `set -e` inside a function exits an interactive shell. After the function returns, `$-` matches the shell from before the call, and `trap -p` shows the RETURN trap from before the call.
 
-`:?` does not exit an interactive shell. It aborts the rest of that list, and the next line still runs. A guard on one line does not stop a launch on the next line. Put the guard and the launch in the same function.
+`$(set +o)` runs in a subshell. With `inherit_errexit` off, that subshell prints `set +o errexit` even when this shell has `set -e`. Evaluating that print clears the caller's errexit. Save `$-` in this shell.
 
-`stop_pid` stops the pid stored in `$run/pid`. Call it before `return 1` when a launch fence fails, so a background process is not left running.
+`:?` does not exit an interactive shell. It aborts the rest of that list, and the next line still runs. A guard on one line does not stop a launch on the next line. Put the guard and the launch in the same function, in one `&&` list.
+
+`$run/pids` is one pid per line. A fence appends the pid it started. A guard that fails before that line does not kill a pid already listed. `drop_pid` kills one pid and removes that line. `stop_drive` kills every line.
 
 ```sh
-stop_pid() {
-  if [ -n "${run:-}" ] && [ -f "$run/pid" ]; then
-    kill "$(cat "$run/pid")" 2>/dev/null || true
-    wait "$(cat "$run/pid")" 2>/dev/null || true
+drop_pid() {
+  local pid=$1
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  if [ -n "${run:-}" ] && [ -f "$run/pids" ]; then
+    grep -v -x -F -- "$pid" "$run/pids" > "$run/pids.tmp" || true
+    mv "$run/pids.tmp" "$run/pids"
   fi
+}
+```
+
+`env_pins_run` is the guard for every `env $(cat "$run/env")` launch. It does not set a trap. The file has to be a regular non-empty file. `HOME` and `XDG_CONFIG_HOME` have to sit under `$run`, and so does `vault` in `$XDG_CONFIG_HOME/omalogbook/config.toml`. `$run-evil` does not match `$run/*`. An empty file, a directory, and a partial file all fail, and the launch in the same `&&` list does not run.
+
+```sh
+env_pins_run() {
+  local home config vault
+  [ -n "${run:-}" ] || return 1
+  [ -f "$run/env" ] || return 1
+  [ -s "$run/env" ] || return 1
+  home=$(sed -n 's/^HOME=//p' "$run/env" | head -1)
+  config=$(sed -n 's/^XDG_CONFIG_HOME=//p' "$run/env" | head -1)
+  case "$home" in
+    "$run"/*) ;;
+    *) return 1 ;;
+  esac
+  case "$config" in
+    "$run"/*) ;;
+    *) return 1 ;;
+  esac
+  [ -f "$config/omalogbook/config.toml" ] || return 1
+  vault=$(sed -n 's/^vault = "\([^"]*\)"/\1/p' "$config/omalogbook/config.toml" | head -1)
+  case "$vault" in
+    "$run"/*) ;;
+    *) return 1 ;;
+  esac
 }
 ```
 
 ```sh
 prepare_drive() {
-  local opts bin wayland
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters bin wayland
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   mise install || return 1
   cargo build --locked || return 1
   run=$(mktemp -d /tmp/omalogbook-verify.XXXXXX) || return 1
@@ -70,18 +103,14 @@ Short commands need no server. Build once, then start each drive as its own proc
 
 ```sh
 drive() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
-  if [ -z "${run:-}" ] || [ ! -r "$run/env" ]; then
-    stop_pid
-    return 1
-  fi
-  env $(cat "$run/env") ./target/debug/omalogbook "$@"
+  local saved=$- prev letters
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
+  [ -n "${run:-}" ] && env_pins_run && env $(cat "$run/env") ./target/debug/omalogbook "$@"
 }
 ```
 
-`drive` returns 1 when `run` is unset or `$run/env` is missing, and it does not start the binary. The shell stays up. `env $(cat "$run/env")` with neither check runs the binary in the ambient environment. A failed `cat` leaves the argument list empty, and the shell keeps going.
+`drive` returns 1 when `run` is unset or `env_pins_run` fails, and it does not start the binary. The shell stays up. `env $(cat "$run/env")` with no guard runs the binary in the ambient environment. An empty file makes `cat` print nothing, `HOME` stays the sailor's home, and the default vault is `~/Logbook`. A directory and a partial file do the same. The `&&` list refuses all three.
 
 Ready when Doctor passes. There is no port and no prompt.
 
@@ -93,23 +122,28 @@ Run this before the first drive, and again when a result looks wrong.
 
 ```sh
 doctor() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters vault resolved
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   realpath ./target/debug/omalogbook || return 1
   drive --version || return 1
-  drive vault || return 1
+  vault=$(drive vault) || return 1
+  resolved=$(realpath "$vault" 2>/dev/null || printf '%s' "$vault")
+  case "$resolved" in
+    "$run"/*) ;;
+    *) return 1 ;;
+  esac
 }
 doctor
 ```
 
-The binary path is inside this checkout. The version line is this build. `vault` prints `$run/vault`. Stop if it prints a path outside `$run`. The config did not take.
+The binary path is inside this checkout. The version line is this build. `vault` prints a path under `$run`. `realpath` follows a symlink. A target outside `$run` makes `doctor` return 1. The config did not take.
 
 ## Drive
 
 Follow `features/`. Start at `features/README.md`. A proof that drives one entry point is incomplete when the map lists others. Run the recipes in that index order. Each recipe resets the vault it reads.
 
-The window is `open_window` in `features/window.md`. That function exports `$run/env` and backgrounds `./run.sh`. `OMALOGBOOK_BIN` in that file is the absolute path `prepare_drive` wrote. When a compositor is up, the same file holds an absolute `WAYLAND_DISPLAY`. `./run.sh` execs `quickshell -p ui/shell.qml`. That needs Quickshell on a Hyprland session. When `quickshell` is not on `PATH`, still drive `features/window.md` and say the painted window was not driven.
+The window is `open_window` in `features/window.md`. That function exports `$run/env` and backgrounds `./run.sh`. `OMALOGBOOK_BIN` in that file is the absolute path `prepare_drive` wrote. When a compositor is up, the same file holds an absolute `WAYLAND_DISPLAY`. `./run.sh` execs `quickshell -p ui/shell.qml`. That needs Quickshell on a Hyprland session. When `quickshell` is not on `PATH`, still drive `features/window.md`. `open_window` records the miss and returns 1. That is not a pass of the painted window.
 
 Copy `tests/golden/morning` only when a recipe says so. Never point the config at `tests/golden/` itself. A later `note` would write into the checkout.
 
@@ -119,9 +153,9 @@ Write under `$run/artifacts/verify/<feature-id>/`. `save_evidence` copies that d
 
 ```sh
 save_evidence() {
-  local opts dest
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters dest
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   [ -n "${run:-}" ] || return 1
   [ -n "${1:-}" ] || return 1
   dest=${EVIDENCE_DIR:-/tmp/omalogbook-evidence}/$1
@@ -138,15 +172,22 @@ If a path cannot be reached, write the command and the missing precondition. Do 
 
 ## Cleanup
 
-A recipe may leave Quickshell or `omalogbook run` in the background. Both write `$run/pid`. `stop_drive` stops that pid and returns 1 only when `run` is unset. A failed launch fence calls `stop_pid` itself, and the shell stays up so you can still run this.
+A recipe may leave Quickshell or `omalogbook run` in the background. Both append a line to `$run/pids`. `stop_drive` kills every line and returns 1 only when `run` is unset. A guard that fails before the append leaves the list alone. The shell stays up so you can still run this.
 
 ```sh
 stop_drive() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters pid
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   [ -n "${run:-}" ] || return 1
-  stop_pid
+  if [ -f "$run/pids" ]; then
+    while IFS= read -r pid || [ -n "$pid" ]; do
+      [ -n "$pid" ] || continue
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    done < "$run/pids"
+    : > "$run/pids"
+  fi
 }
 stop_drive
 ```
@@ -157,9 +198,9 @@ Confirm the evidence directory still holds the feature's files. Then confirm the
 
 ```sh
 confirm_drive() {
-  local opts git_diff=0 log_diff=0 logbook
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters git_diff=0 log_diff=0 logbook
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   [ -n "${run:-}" ] || return 1
   git status --porcelain --untracked-files=all > "$run/git-after" || return 1
   cmp -s "$run/git-before" "$run/git-after" || git_diff=1

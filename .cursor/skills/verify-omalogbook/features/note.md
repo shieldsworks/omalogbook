@@ -30,15 +30,14 @@ Empty the vault, then take the boat's date from the same env the binary uses.
 
 ```sh
 reset_note() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   [ -n "${run:-}" ] || return 1
   [ -n "${art:-}" ] || return 1
-  [ -r "$run/env" ] || return 1
   rm -rf "$run/vault" || return 1
   mkdir -p "$run/vault" "$art" || return 1
-  day=$(env $(cat "$run/env") date +%F) || return 1
+  env_pins_run && day=$(env $(cat "$run/env") date +%F) || return 1
 }
 reset_note
 ```

@@ -28,9 +28,9 @@ Replace the vault with the pinned morning. The checkout copy stays untouched.
 
 ```sh
 reset_today() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local saved=$- prev letters
+  prev=$(trap -p RETURN)
+  trap 'if [ -n "$prev" ]; then eval "$prev"; else trap - RETURN; fi; letters=$(printf "%s" "$saved" | tr -d is); set +abefhkmnptuvxBCEHPT; if [ -n "$letters" ]; then set -"$letters"; fi' RETURN
   [ -n "${run:-}" ] || return 1
   [ -n "${art:-}" ] || return 1
   rm -rf "$run/vault" || return 1
