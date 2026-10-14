@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 if [[ -n ${BASH_ENV:-} ]]; then
-  unset BASH_ENV
-  exec bash --noprofile --norc "$0" "$@"
+  if ! unset BASH_ENV; then
+    exit 1
+  fi
+  exec env -u BASH_ENV bash --noprofile --norc "$0" "$@"
 fi
 
 set -euo pipefail
@@ -29,6 +31,7 @@ pause_pid=
 pause_pgid=
 inherit_pgid=
 copy_failed=0
+outside_failed=0
 kept_run=
 proved=0
 launch_n=0
@@ -132,20 +135,33 @@ sweep_run() {
       kill -KILL "$pid" 2>/dev/null || true
       continue
     fi
-    if [[ -r $envfile ]] && tr '\0' '\n' <"$envfile" | grep -F -q -- "XDG_RUNTIME_DIR=$run"; then
+    if [[ -r $envfile ]] && grep -z -F -q -- "XDG_RUNTIME_DIR=$run" "$envfile"; then
       kill -KILL "$pid" 2>/dev/null || true
     fi
   done
 }
 
 stop_groups() {
-  local pgid pid
+  local pgid pid before have
   local -a ids=()
+  before=" $all_pgids "
   for pgid in "$@"; do
     [[ -n $pgid && $pgid != "$self_pgid" ]] || continue
     note_tree "$pgid"
     ids+=("$pgid")
   done
+  have=" ${ids[*]} "
+  for pgid in $all_pgids; do
+    case $before in
+      *" $pgid "*) continue ;;
+    esac
+    case $have in
+      *" $pgid "*) continue ;;
+    esac
+    ids+=("$pgid")
+    have="$have$pgid "
+  done
+  ((${#ids[@]})) || return 0
   signal_pgids TERM "${ids[@]}"
   signal_pgids KILL "${ids[@]}"
   for pgid in "${ids[@]}"; do
@@ -195,7 +211,8 @@ collect_watch() {
   raw=$(mktemp "$run/watch.XXXXXX")
   {
     find "$(dirname "$run")" \
-      \( -path "$run" -o -path "$run/*" -o -path "$evidence" -o -path "$evidence/*" \) -prune \
+      \( -path "$run" -o -path "$run/*" -o -path "$evidence" -o -path "$evidence/*" \
+         -o -path "$repo/.git" -o -path "$repo/.git/*" \) -prune \
       -o -type f -printf '%p %T@ %s\n'
     if [[ -n ${real_home:-} && -d $real_home ]]; then
       find "$real_home" \
@@ -207,6 +224,7 @@ collect_watch() {
            -o -path "$real_home/.cursor-server" -o -path "$real_home/.cursor-server/*" \
            -o -path "$real_home/.local/share/mise" -o -path "$real_home/.local/share/mise/*" \
            -o -path "$real_home/.local/share/cursor" -o -path "$real_home/.local/share/cursor/*" \
+           -o -path "$repo/.git" -o -path "$repo/.git/*" \
         \) -prune \
         -o -type f -printf '%p %T@ %s\n'
     fi
@@ -232,13 +250,14 @@ confirm_drive() {
 }
 
 archive_current() {
-  local dest marker ok old
+  local dest marker ok old diff_ok
   [[ -n ${run:-} && -d ${run:-} ]] || return 0
   stop_all
   launch_n=$((launch_n + 1))
   dest=$evidence/launch-$launch_n
   marker=$run/artifacts/.copy-marker
   ok=0
+  diff_ok=1
   mkdir -p "$run/artifacts" "$dest"
   printf '%s\n' "$run" >"$marker"
   if cp -a "$run/artifacts/." "$dest/"; then
@@ -246,7 +265,12 @@ archive_current() {
       ok=1
     fi
   fi
-  if [[ $ok -eq 1 ]]; then
+  if [[ -f $run/outside-diff.txt ]]; then
+    cp -a "$run/outside-diff.txt" "$dest/outside-diff.txt" || diff_ok=0
+  elif [[ $outside_failed -eq 1 ]]; then
+    diff_ok=0
+  fi
+  if [[ $ok -eq 1 && $diff_ok -eq 1 ]]; then
     proved=1
     old=$run
     run=
@@ -269,6 +293,7 @@ finish() {
   stop_spawned
   if [[ -n ${run:-} && -d $run && -f ${run:-}/watch-before ]]; then
     if ! confirm_drive; then
+      outside_failed=1
       printf 'wrote outside %s\n' "$run" >&2
       if [[ $status -eq 0 ]]; then
         status=1
@@ -555,14 +580,19 @@ PY
 }
 
 run_ready() {
-  local art=$1 i listener
+  local art=$1 i listener note stdout
   [[ -n ${SOCKET:-} && -S $SOCKET ]] || return 1
   [[ -n ${follow_pid:-} ]] || return 1
+  note=$(note_path)
+  stdout=$art/stdout.txt
   for i in $(seq 1 12); do
     listener=$(listener_pid "$SOCKET" || true)
     if [[ -n $listener ]] \
       && pid_on_socket "$listener" "$SOCKET" \
-      && protocol_line "$SOCKET" >/dev/null; then
+      && protocol_line "$SOCKET" >/dev/null \
+      && [[ -f $stdout ]] \
+      && grep -F -q -- "omalogbook:" "$stdout" \
+      && grep -F -q -- "$note" "$stdout"; then
       printf 'ready:yes\nlistener:%s\n' "$listener" | tee "$art/ready.txt"
       return 0
     fi
@@ -806,7 +836,7 @@ window_miss() {
   mkdir -p "$dir"
   printf '%s\n' "$name" >"$dir/command.txt"
   printf 'missing command: %s\n' "$name" >"$dir/stdout.txt"
-  printf '%s\n' '0' >"$dir/exit-code.txt"
+  printf '%s\n' '127' >"$dir/exit-code.txt"
   printf 'missing command: %s\n' "$name" >"$dir/miss.txt"
 }
 
@@ -993,7 +1023,7 @@ probe_live_hub() {
 }
 
 drive_run() {
-  local art dir
+  local art dir ready=0
   art=$run/artifacts/verify/run
   mkdir -p "$art"
   probe_live_hub "$art"
@@ -1017,7 +1047,15 @@ drive_run() {
     stdbuf -oL "$bin" run --socket "$SOCKET" --no-git
   follow_pid=$started_pid
   follow_pgid=$started_pid
-  run_ready "$dir"
+  if ! run_ready "$dir"; then
+    ready=1
+  fi
+  if [[ -n ${follow_pgid:-} ]]; then
+    stop_groups "$follow_pgid"
+  fi
+  follow_pid=
+  follow_pgid=
+  return "$ready"
 }
 
 reject_exec() {
@@ -1156,7 +1194,7 @@ start_follow() {
 }
 
 finish_socket_cases() {
-  local art sock listener sleeper note
+  local art sock listener sleeper note opened
   art=$run/artifacts/verify/confine
   sock=$run/inherit.sock
   for _ in $(seq 1 50); do
@@ -1211,8 +1249,17 @@ finish_socket_cases() {
   start_follow "$art/protocol-run" "$sock"
   run_ready "$art/protocol-run"
   note=$(note_path)
-  grep -F 'log opened' "$note" >/dev/null
-  grep -F 'log opened' "$art/protocol-run/stdout.txt" >/dev/null
+  opened=0
+  for _ in $(seq 1 50); do
+    if [[ -f $note && -f $art/protocol-run/stdout.txt ]] \
+      && grep -F -q 'log opened' "$note" \
+      && grep -F -q 'log opened' "$art/protocol-run/stdout.txt"; then
+      opened=1
+      break
+    fi
+    sleep 0.1
+  done
+  [[ $opened -eq 1 ]]
   stop_groups "$follow_pgid" "$hub_pgid"
   follow_pid=
   hub_pid=
