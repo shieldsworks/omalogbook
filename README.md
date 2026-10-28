@@ -213,7 +213,11 @@ clears the window when the line is already empty. `n`, or the button, is
 Night Watch: red on black, this window's own. A line that opens with `/`
 lists the marks it could become, and Tab takes the first. Click an entry to
 change it: its words come up in the line for editing, STRIKE rules through
-it, and Escape leaves it alone. A struck entry shows struck.
+it, and Escape leaves it alone. A struck entry shows struck. ERASE takes the
+entry out altogether, and asks once before it does — it reads SURE? while it
+is armed, and anything else you do puts the safety back on. Striking is still
+the one to reach for: a struck entry is a record of something withdrawn, an
+erased one is not a record at all.
 
 It reads the day through `omalogbook today --json` and writes with
 `omalogbook note`, so the window needs no socket of its own and the position
@@ -226,6 +230,29 @@ In the Omarchy shell it is the plugin's panel (`manifest.json`, id
 way it finds the release build in the parent of this ui directory, the
 checkout or the installed plugin, then `omalogbook` on PATH.
 `OMALOGBOOK_BIN` names one directly.
+
+Link this checkout in place of an installed copy:
+
+```sh
+scripts/link-plugin.sh           # link and enable
+scripts/link-plugin.sh --unlink  # back to the installed copy
+```
+
+Linked, the panel opens from anywhere the shell can summon it:
+
+```sh
+omarchy-shell shell summon org.omahoy.logbook
+```
+
+which is what a row in `~/.config/omarchy/extensions/omarchy-menu.jsonc` needs
+to put the log on the Omarchy menu (Super+Space). A row that files an entry
+without opening anything wants the CLI on PATH and Omarchy's own prompt:
+
+```jsonc
+"logbook.note": {"icon":"󰏫","label":"Note","aliases":["note"],
+  "when":"omarchy-cmd-present omalogbook",
+  "action":"note=$(omarchy-menu-input 'Log entry') && [ -n \"$note\" ] && omalogbook note \"$note\""},
+```
 
 The window only shows the log. Keeping the watch — the hourly entries, the
 day's run, the GPX — is `omalogbook run`, and it is worth having both.
