@@ -75,8 +75,14 @@ QtObject {
         return h > 0 ? h + " h " + String(m).padStart(2, "0") + " min" : m + " min";
     }
 
+    // A refresh asked for while a read is running is kept, not dropped:
+    // that read may have started before the write it was asked for.
+    property bool again: false
     function refresh() {
-        if (reader.running) return;
+        if (reader.running) {
+            again = true;
+            return;
+        }
         reader.running = true;
     }
 
@@ -109,6 +115,11 @@ QtObject {
             if (code !== 0) {
                 totals.error = readerErr.text.trim()
                     || ("omalogbook totals exited " + code + ".\nTried: " + totals.binary);
+            }
+            if (totals.again) {
+                totals.again = false;
+                // Later, so this read's output has been taken first.
+                Qt.callLater(totals.refresh);
             }
         }
     }

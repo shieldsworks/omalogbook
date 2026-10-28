@@ -50,8 +50,14 @@ QtObject {
     signal filed(string text)
     signal refused(string message)
 
+    // A refresh asked for while a read is running is kept, not dropped:
+    // that read may have started before the write it was asked for.
+    property bool again: false
     function refresh() {
-        if (reader.running) return;
+        if (reader.running) {
+            again = true;
+            return;
+        }
         reader.running = true;
     }
 
@@ -153,6 +159,11 @@ QtObject {
                 const lines = readerErr.text.trim().split("\n").filter(line => line !== "");
                 book.lastLog = lines.length ? lines[lines.length - 1] : "";
                 book.error = book.lastLog || ("omalogbook today exited " + code + ".\nTried: " + book.binary);
+            }
+            if (book.again) {
+                book.again = false;
+                // Later, so this read's output has been taken first.
+                Qt.callLater(book.refresh);
             }
         }
     }
