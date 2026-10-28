@@ -3,9 +3,10 @@ import Quickshell
 import qs.Ui
 import qs.Commons
 
-// The log reading in the bar — `LOG 126.9 nm`, every mile the boat has
-// sailed since the first note. Click for the rest: time under way, the
-// speed that makes, and the days worth remembering.
+// The log in the bar: just `LOG`, so it stays narrow enough to keep a top
+// bar's center clear of a laptop's camera notch. The distance run is in the
+// tooltip; click for the rest: time under way, the speed that makes, and the
+// days worth remembering.
 //
 // The name is the instrument's: a log is what measures distance run, and
 // this is that dial with the whole book behind it.
@@ -36,13 +37,7 @@ BarWidget {
     readonly property real todayNm: Totals.num(Totals.today && Totals.today.distanceNm)
     readonly property bool sailing: root.todayNm > 0
 
-    readonly property string label: {
-        if (!Totals.read) return "LOG";
-        if (Totals.error !== "") return "LOG ?";
-        if (!Totals.anything) return "LOG –";
-        const run = Totals.distanceNm.toFixed(Totals.distanceNm >= 1000 ? 0 : 1) + " nm";
-        return root.sailing ? "LOG " + run + " · +" + root.todayNm.toFixed(1) : "LOG " + run;
-    }
+    readonly property string run: Totals.distanceNm.toFixed(Totals.distanceNm >= 1000 ? 0 : 1) + " nm"
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
@@ -51,14 +46,14 @@ BarWidget {
         id: button
         anchors.fill: parent
         bar: root.bar
-        text: root.label
+        text: "LOG"
         foreground: root.bar ? root.bar.barForeground : Color.foreground
         dimmed: !Totals.anything || Totals.error !== ""
         tooltipText: {
             if (Totals.error !== "") return Totals.error;
             if (!Totals.anything) return "Nothing logged yet";
-            if (root.sailing) return "Today: " + root.todayNm.toFixed(1) + " nm";
-            return "";
+            if (root.sailing) return "Logged: " + root.run + " · Today: " + root.todayNm.toFixed(1) + " nm";
+            return "Logged: " + root.run;
         }
         onPressed: b => {
             if (b === Qt.LeftButton) {
