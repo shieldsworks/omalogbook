@@ -7,7 +7,7 @@ const USAGE: &str = "\
 omalogbook — the ship's log for Omahoy
 
 usage: omalogbook run [--vault DIR] [--socket PATH] [--no-git]
-       omalogbook note TEXT...
+       omalogbook note [--no-git] TEXT...
        omalogbook amend N TEXT... [--date D] [--expect LINE]
        omalogbook strike N [--erase] [--date D] [--expect LINE]
        omalogbook presets [--json]
@@ -184,12 +184,17 @@ fn run(args: &[&str]) -> ExitCode {
 }
 
 fn note(args: &[&str]) -> ExitCode {
+    // `--no-git` counts only ahead of the words, so a note may say it.
+    let (no_git, args) = match args.split_first() {
+        Some((&"--no-git", rest)) => (true, rest),
+        _ => (false, args),
+    };
     let text = args.join(" ");
     if text.trim().is_empty() {
         eprintln!("omalogbook: what should the entry say?\n\n{USAGE}");
         return ExitCode::from(64);
     }
-    let (settings, _) = match settings(&[]) {
+    let (settings, _) = match settings(if no_git { &["--no-git"] } else { &[] }) {
         Ok(loaded) => loaded,
         Err(code) => return code,
     };
@@ -271,7 +276,10 @@ fn note(args: &[&str]) -> ExitCode {
                 );
             }
             if settings.git {
-                match omalogbook::git::commit(&settings.vault, &format!("log: {date} · a note")) {
+                // Only the day's file: the whole vault is slow to scan, and
+                // the rest of it belongs to whoever else commits there.
+                let message = format!("log: {date} · a note");
+                match omalogbook::git::commit_paths(&settings.vault, &[&path], &message) {
                     Ok(_) => {}
                     Err(e) => eprintln!("omalogbook: could not commit ({e}); the note is on disk"),
                 }
