@@ -32,8 +32,8 @@ BarWidget {
         close();
     }
 
-    // The day's run, once there is one, is the part that moves; the rest of
-    // the bar is a number that grows by a mile an hour at best.
+    // The day's run, once there is one, is the part that moves; the total
+    // grows by a mile an hour at best. Both live in the tooltip.
     readonly property real todayNm: Totals.num(Totals.today && Totals.today.distanceNm)
     readonly property bool sailing: root.todayNm > 0
 
@@ -50,6 +50,7 @@ BarWidget {
         foreground: root.bar ? root.bar.barForeground : Color.foreground
         dimmed: !Totals.anything || Totals.error !== ""
         tooltipText: {
+            if (!Totals.read) return "Reading the log…";
             if (Totals.error !== "") return Totals.error;
             if (!Totals.anything) return "Nothing logged yet";
             if (root.sailing) return "Logged: " + root.run + " · Today: " + root.todayNm.toFixed(1) + " nm";
