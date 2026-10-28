@@ -86,6 +86,18 @@ QtObject {
         return true;
     }
 
+    // Take the entry out altogether, rather than ruling a line through it.
+    // The log keeps a struck entry because a paper log would; erasing is
+    // for the note that should never have been a note at all, and it does
+    // not come back.
+    function erase(index, expect) {
+        if (filing) return false;
+        filing = true;
+        writer.command = run(["strike", String(index + 1), "--expect", expect, "--erase"]);
+        writer.running = true;
+        return true;
+    }
+
     function take(text) {
         var m;
         try {

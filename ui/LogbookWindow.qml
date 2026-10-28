@@ -80,11 +80,15 @@ Item {
     // under us is refused rather than mistaken for another.
     property int editing: -1
     property string editingLine: ""
+    // Erase asks once. A struck entry is still a record; a gone one isn't,
+    // so the button arms before it fires rather than taking a stray click.
+    property bool armed: false
 
     function edit(index) {
         if (index < 0 || index >= app.book.entries.length) return;
         app.editing = index;
         app.editingLine = String(app.book.entries[index]);
+        app.armed = false;
         var said = app.editingLine.indexOf(" — ");
         field.text = said >= 0 ? app.editingLine.slice(said + 3) : "";
         field.cursorPosition = field.text.length;
@@ -94,6 +98,7 @@ Item {
     function cancel() {
         app.editing = -1;
         app.editingLine = "";
+        app.armed = false;
         field.text = "";
     }
 
@@ -113,7 +118,21 @@ Item {
 
     function strikeEditing() {
         if (app.editing < 0 || app.book.filing) return;
+        app.armed = false;
         if (app.book.strike(app.editing, app.editingLine)) app.cancel();
+    }
+
+    // First click arms, second erases. Anything else — striking, picking
+    // another entry, Escape — puts the safety back on.
+    function eraseEditing() {
+        if (app.editing < 0 || app.book.filing) return;
+        if (!app.armed) {
+            app.armed = true;
+            app.toast("Erase takes the entry out for good. Click again to mean it.");
+            return;
+        }
+        app.armed = false;
+        if (app.book.erase(app.editing, app.editingLine)) app.cancel();
     }
 
     // A struck entry keeps its line through it here too, rather than showing
@@ -170,6 +189,8 @@ Item {
         function edit(index: int): void { app.edit(index); }
         function cancel(): void { app.cancel(); }
         function strike(): void { app.strikeEditing(); }
+        function erase(): void { app.eraseEditing(); }
+        function armedAt(): bool { return app.armed; }
         function editingAt(): int { return app.editing; }
         function marks(): string { return JSON.stringify(app.matches.map(m => m.word)); }
         function refresh(): void { app.book.refresh(); }
@@ -253,28 +274,51 @@ Item {
             // has it, so `n` for Night Watch would be a letter in a note:
             // the palette key belongs to the button beside it, and Escape
             // is how you leave.
-            Rectangle {
-                id: strikeButton
+            // What can be done to the entry being changed: rule a line
+            // through it, or take it out altogether. Both sit beside the
+            // line, so the words and what happens to them are in one place.
+            Row {
+                id: entryButtons
                 visible: app.editing >= 0
                 anchors { right: parent.right; rightMargin: 14; verticalCenter: box.verticalCenter }
-                height: box.height
-                width: strikeLabel.implicitWidth + 20
-                color: "transparent"
-                border.width: 1
-                border.color: Qt.alpha(app.theme.red, 0.6)
-                Label {
-                    id: strikeLabel
-                    anchors.centerIn: parent
-                    text: "STRIKE"
-                    color: app.theme.red
-                    font.pixelSize: app.theme.baseSize - 1
+                spacing: 6
+
+                component Button: Rectangle {
+                    property alias text: buttonLabel.text
+                    property color tint: app.theme.red
+                    signal clicked
+
+                    height: box.height
+                    width: buttonLabel.implicitWidth + 20
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Qt.alpha(tint, 0.6)
+                    Label {
+                        id: buttonLabel
+                        anchors.centerIn: parent
+                        color: parent.tint
+                        font.pixelSize: app.theme.baseSize - 1
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: parent.clicked() }
                 }
-                MouseArea { anchors.fill: parent; onClicked: app.strikeEditing() }
+
+                Button {
+                    text: "STRIKE"
+                    onClicked: app.strikeEditing()
+                }
+                // Armed, it says so: the second click is the one that erases,
+                // and the word changes rather than the size, so the line
+                // beside it doesn't jump.
+                Button {
+                    text: app.armed ? "SURE?" : "ERASE"
+                    tint: app.armed ? app.theme.red : Qt.alpha(app.theme.foreground, 0.75)
+                    onClicked: app.eraseEditing()
+                }
             }
 
             Rectangle {
                 id: box
-                anchors { left: parent.left; right: app.editing >= 0 ? strikeButton.left : parent.right; top: rule.bottom; topMargin: 12; leftMargin: 14; rightMargin: app.editing >= 0 ? 8 : 14 }
+                anchors { left: parent.left; right: app.editing >= 0 ? entryButtons.left : parent.right; top: rule.bottom; topMargin: 12; leftMargin: 14; rightMargin: app.editing >= 0 ? 8 : 14 }
                 height: app.theme.baseSize + 20
                 color: Qt.alpha(app.theme.foreground, field.activeFocus ? 0.08 : 0.05)
                 border.width: 1
