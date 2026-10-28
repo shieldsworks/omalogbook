@@ -164,7 +164,12 @@ QtObject {
             book.filing = false;
             if (code === 0) {
                 book.filed(writerErr.text.trim());
+                // The window's own write rereads the day and the vault
+                // here, on exit. A vault on a VirtioFS share reports the
+                // change to inotify late or not at all, so the file watches
+                // below cannot be what shows the crew their own entry.
                 book.refresh();
+                Totals.refresh();
             } else {
                 book.refused(writerErr.text.trim() || ("omalogbook note exited " + code + "."));
             }
