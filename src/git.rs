@@ -41,8 +41,10 @@ pub fn commit_paths(vault: &Path, paths: &[&Path], message: &str) -> Result<bool
     }
     let mut add = Command::new("git");
     add.arg("-C").arg(vault).args(["add", "--"]).args(paths);
-    if !add.output().is_ok_and(|out| out.status.success()) {
-        return Err("git add failed".to_string());
+    match add.output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => return Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+        Err(e) => return Err(e.to_string()),
     }
     let mut diff = Command::new("git");
     diff.arg("-C")
@@ -159,6 +161,38 @@ mod tests {
 
         assert_eq!(commit_paths(&dir, &[&note], "again"), Ok(false));
         assert_eq!(commit_paths(&dir, &[], "none"), Ok(false));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_held_index_lock_is_named_and_a_retry_after_it_goes_commits() {
+        let dir = vault("index-lock");
+        if run(&dir, &["init", "-q"]).is_none() {
+            return; // no git here; the daemon copes the same way
+        }
+        run(&dir, &["config", "user.email", "log@example.com"]).unwrap();
+        run(&dir, &["config", "user.name", "Omalogbook"]).unwrap();
+        let note = dir.join("note.md");
+        fs::write(&note, "x\n").unwrap();
+        let lock = dir.join(".git/index.lock");
+        fs::write(&lock, "").unwrap();
+        let err = commit_paths(&dir, &[&note], "locked").unwrap_err();
+        assert!(err.contains("index.lock"), "{err}");
+        let freed = lock.clone();
+        let other = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            fs::remove_file(freed).unwrap();
+        });
+        let mut done = Err(String::new());
+        for _ in 0..10 {
+            done = commit_paths(&dir, &[&note], "after the lock");
+            if done.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        other.join().unwrap();
+        assert_eq!(done, Ok(true));
         let _ = fs::remove_dir_all(&dir);
     }
 }

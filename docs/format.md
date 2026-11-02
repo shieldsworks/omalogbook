@@ -108,9 +108,13 @@ night.
 A trip is a `Departed` mark with no `Berthed` after it. `omalogbook run` reads
 the notes for one every ten seconds. While a trip is open the passage starts at
 the next fix whatever the speed, and neither stillness nor a lost fix ends it;
-the `Berthed` mark does, within ten seconds. Marks in one minute are ordered as
-the note lists them. A note that can't be read, or holds no mark, changes
-nothing. Fixes below `stopped_kn` during a trip add no distance or time under
+the `Berthed` mark does, at the first GPS update at least ten seconds after the
+last look. A month of notes with no mark at all closes it too. A mark added to
+or struck from an earlier day's note is picked up within ten minutes; today's
+note is watched for changes. Marks in one minute are ordered as
+the note lists them. A note that can't be read, or a note with no entries at
+all, changes nothing. With no speed from the receiver, the speed is worked out
+from the last fix. Fixes below `stopped_kn` during a trip add no distance or time under
 way. A `Departed` while a passage is
 already open keeps that passage and its track. A recorder started while a trip
 is open, after a reboot, starts a new track file at its first fix; the trip

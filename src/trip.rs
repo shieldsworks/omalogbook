@@ -104,8 +104,12 @@ pub enum State {
     Open(i64),
     /// A `Berthed` with no `Departed` after it.
     Berthed,
-    /// No mark in the last month, or a note that could not be read. A note
-    /// caught empty or half written reads this way, so it changes nothing.
+    /// Every note in the last month read, and not one mark in them: no
+    /// trip is open, whatever was open before.
+    None,
+    /// A note that could not be read, or one caught with no entries at all,
+    /// as it is while being written, before any mark was found. It changes
+    /// nothing.
     Unknown,
 }
 
@@ -117,7 +121,8 @@ pub fn state(vault: &Path, now: i64) -> State {
             .first()
             .map_or(State::Unknown, |m| State::Open(m.epoch)),
         Since::Berthed => State::Berthed,
-        Since::Nothing | Since::Unreadable => State::Unknown,
+        Since::Nothing => State::None,
+        Since::Unreadable => State::Unknown,
     }
 }
 
@@ -128,11 +133,15 @@ fn marks_since_departure(vault: &Path, now: i64) -> Since {
     let Some(today_index) = time::day_index(&today) else {
         return Since::Nothing;
     };
+    // A note with no entries at all is one caught mid-write or emptied by
+    // hand. Its marks are not known, so finding none anywhere proves nothing.
+    let mut blank = false;
     for back in 0..=MAX_DAYS {
         let date = time::utc((today_index - back) * 86_400).date();
-        let Some(marks) = marks_on(vault, &date) else {
+        let Some((marks, empty)) = marks_on(vault, &date) else {
             return Since::Unreadable;
         };
+        blank |= empty;
         // Newest first, so the first `Departed` found is the latest. Marks
         // in one minute share an epoch; the later line in the note is the
         // later mark.
@@ -154,18 +163,23 @@ fn marks_since_departure(vault: &Path, now: i64) -> Since {
             }
         }
     }
-    Since::Nothing
+    if blank {
+        Since::Unreadable
+    } else {
+        Since::Nothing
+    }
 }
 
 /// Every mark in one day's note that nobody has struck through, in the
-/// note's order. No note is no marks; a note that is there and can't be
-/// read is `None`.
-fn marks_on(vault: &Path, date: &str) -> Option<Vec<Mark>> {
+/// note's order, and whether the note is there with no entries at all. No
+/// note is no marks; a note that is there and can't be read is `None`.
+fn marks_on(vault: &Path, date: &str) -> Option<(Vec<Mark>, bool)> {
     let path = day::path_for(vault, date);
     let Some(text) = read_bounded(&path, MAX_NOTE_BYTES) else {
-        return (!path.exists()).then(Vec::new);
+        return (!path.exists()).then(|| (Vec::new(), false));
     };
-    let marks = day::entries_in(&text)
+    let entries = day::entries_in(&text);
+    let marks = entries
         .iter()
         .filter(|line| !day::is_struck(line))
         .filter_map(|line| {
@@ -174,7 +188,7 @@ fn marks_on(vault: &Path, date: &str) -> Option<Vec<Mark>> {
             Some(Mark { epoch, label })
         })
         .collect();
-    Some(marks)
+    Some((marks, entries.is_empty()))
 }
 
 /// The mark an entry is, if it is one: the preset's label that opens what
@@ -764,5 +778,33 @@ mod tests {
         assert_eq!(state(&vault, START + 60), State::Unknown);
         fs::write(&path, kept).unwrap();
         assert!(matches!(state(&vault, START + 60), State::Open(_)));
+    }
+
+    #[test]
+    fn no_mark_in_the_month_is_no_trip() {
+        let old = vault("departed-long-ago");
+        note(&old, START, &[mark_line(START, "Departed")]);
+        assert!(matches!(state(&old, START + 60), State::Open(_)));
+        let later = START + 40 * 86_400;
+        note(
+            &old,
+            later,
+            &[crate::entry::event(
+                time::local(later),
+                time::utc(later),
+                "a note",
+            )],
+        );
+        assert_eq!(state(&old, later + 60), State::None);
+    }
+
+    #[test]
+    fn a_blank_note_today_does_not_hide_yesterdays_departure() {
+        let dir = vault("blank-today");
+        note(&dir, START, &[mark_line(START, "Departed")]);
+        let next = START + 86_400;
+        let path = day::path_for(&dir, &time::local(next).date());
+        fs::write(&path, "").unwrap();
+        assert!(matches!(state(&dir, next + 60), State::Open(_)));
     }
 }
