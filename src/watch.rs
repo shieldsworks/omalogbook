@@ -59,6 +59,13 @@ const TRIP_CHECK_SECS: i64 = 10;
 /// what a new `Departed` or `Berthed` looks like.
 const TRIP_REREAD_SECS: i64 = 600;
 
+/// A speed worked out from positions spans at least this long. A fix wanders
+/// a few meters; over half a minute that reads as a fraction of a knot.
+const SPEED_WINDOW_MIN: i64 = 30;
+
+/// And no longer than this, so a speed still follows the boat.
+const SPEED_WINDOW_MAX: i64 = 90;
+
 /// One good fix in five with the source not delivering.
 const IDLE_SHARE: usize = 5;
 
@@ -123,9 +130,10 @@ pub struct Watch {
     /// with no `Berthed` after it. While they do, the passage and its track
     /// stay open whatever the speed.
     trip_open: Option<i64>,
-    /// Where and when the last fix was, under way or not, to work out the
-    /// speed when the receiver sends none.
-    prev_fix: Option<(f64, f64, i64)>,
+    /// Where and when the recent fixes were, under way or not, oldest first,
+    /// over the last `SPEED_WINDOW_MAX` seconds, to work out the speed of an
+    /// open trip when the receiver sends none.
+    recent: VecDeque<(f64, f64, i64)>,
     /// When the notes were last read for that, so it is read only every
     /// `TRIP_CHECK_SECS`.
     trip_checked: Option<i64>,
@@ -162,7 +170,7 @@ impl Watch {
             good: VecDeque::new(),
             quality: (None, None),
             trip_open: None,
-            prev_fix: None,
+            recent: VecDeque::new(),
             trip_checked: None,
             trip_seen: None,
             started: now,
@@ -203,14 +211,17 @@ impl Watch {
             return Ok(Vec::new());
         }
         self.trip_seen = Some((today, stamp, now));
-        let closing = match trip::state(&self.vault, now) {
+        let (closing, why) = match trip::state(&self.vault, now) {
             trip::State::Unknown => return Ok(Vec::new()),
             trip::State::Open(departed) => {
                 self.trip_open = Some(departed);
                 return Ok(Vec::new());
             }
-            trip::State::Berthed => "berthed; the track is closed",
-            trip::State::None => "no /depart in the last month; the track is closed",
+            trip::State::Berthed => ("berthed; the track is closed", "berthed"),
+            trip::State::None => (
+                "no /depart in the last month; the track is closed",
+                "trip closed",
+            ),
         };
         let was_open = self.trip_open.take().is_some();
         if !was_open || !self.underway {
@@ -223,8 +234,30 @@ impl Watch {
         let wrote = self.say(now, closing.into())?;
         let mut paths = vec![self.day.path.clone()];
         paths.extend(track);
-        self.commit_only(&paths, &format!("log: {} · berthed", self.day.date));
+        self.commit_only(&paths, &format!("log: {} · {why}", self.day.date));
         Ok(wrote)
+    }
+
+    /// Remember this fix, and give the speed from the oldest fix in the
+    /// window at least `SPEED_WINDOW_MIN` seconds back, if there is one.
+    fn derived_speed(&mut self, lat: f64, lon: f64, at: i64) -> Option<f64> {
+        if self.recent.back().is_some_and(|(_, _, was)| at <= *was) {
+            self.recent.clear();
+        }
+        while self
+            .recent
+            .front()
+            .is_some_and(|(_, _, was)| at - was > SPEED_WINDOW_MAX)
+        {
+            self.recent.pop_front();
+        }
+        let speed = self.recent.front().and_then(|&(from_lat, from_lon, was)| {
+            let span = at - was;
+            (span >= SPEED_WINDOW_MIN)
+                .then(|| geo::distance_nm((from_lat, from_lon), (lat, lon)) * 3600.0 / span as f64)
+        });
+        self.recent.push_back((lat, lon, at));
+        speed
     }
 
     /// Commit just these files, without pushing: the vault's own backup
@@ -320,18 +353,14 @@ impl Watch {
         }
 
         self.last_fix = now;
-        // A receiver that sends no speed still moves the boat: the speed is
-        // the distance from the last fix over the time between them.
-        let derived = self.prev_fix.and_then(|(lat, lon, was)| {
-            let gap = at - was;
-            (1..=MAX_GAP_SECS)
-                .contains(&gap)
-                .then(|| geo::distance_nm((lat, lon), (fix.lat, fix.lon)) * 3600.0 / gap as f64)
-        });
-        if self.prev_fix.is_none_or(|(_, _, was)| at > was) {
-            self.prev_fix = Some((fix.lat, fix.lon, at));
-        }
-        let speed = fix.sog_kn.or(derived).unwrap_or(0.0);
+        let derived = self.derived_speed(fix.lat, fix.lon, at);
+        // With no trip open a missing speed is no speed, so jitter can't start
+        // a passage. During a trip, the speed over the window stands in.
+        let speed = match fix.sog_kn {
+            Some(sog) => sog,
+            None if self.trip_open.is_some() => derived.unwrap_or(0.0),
+            None => 0.0,
+        };
         if !self.underway && (speed >= self.settings.underway_kn || self.trip_open.is_some()) {
             self.underway = true;
             self.slow_since = None;
@@ -374,7 +403,8 @@ impl Watch {
             }
         }
         self.last = Some((fix.lat, fix.lon, at));
-        self.day.max_sog_kn = self.day.max_sog_kn.max(speed);
+        // Only the receiver's own speed is a record; a worked-out one is not.
+        self.day.max_sog_kn = self.day.max_sog_kn.max(fix.sog_kn.unwrap_or(0.0));
 
         if at - self.last_point >= i64::from(self.settings.point_seconds)
             && let Some(track) = self.track.as_mut()
@@ -1883,8 +1913,9 @@ mod tests {
             watch.update(update, at).unwrap();
         }
         assert!(watch.day.distance_nm > 5.0, "{}", watch.day.distance_nm);
+        // The first `SPEED_WINDOW_MIN` seconds have no worked-out speed yet.
         assert!(
-            watch.day.underway_secs >= 1790,
+            watch.day.underway_secs >= 1800 - SPEED_WINDOW_MIN,
             "{}",
             watch.day.underway_secs
         );
@@ -1903,5 +1934,54 @@ mod tests {
         let wrote = still(&mut watch, later, 20).join("\n");
         assert!(wrote.contains("the track is closed"), "{wrote}");
         assert!(watch.trip_open.is_none() && watch.track.is_none());
+    }
+
+    /// A fix with no SOG, wandering about 3.3 m north and south each second.
+    fn jitter(step: i64, at: i64) -> keel::Update {
+        let lat = 37.8663 + if step % 2 == 0 { 0.00003 } else { 0.0 };
+        keel::Update::Fix(
+            keel::Fix {
+                lat,
+                lon: -122.3148,
+                sog_kn: None,
+                cog_deg: None,
+                utc: Some(at),
+                satellites: Some(9),
+                hdop: Some(0.9),
+            },
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn jitter_without_sog_or_a_trip_starts_nothing() {
+        let s = settings("jitter-no-trip");
+        let start = 1_789_300_800;
+        let mut watch = Watch::new(s, start).unwrap();
+        for step in 0..=120 {
+            let at = start + step;
+            let wrote = watch.update(jitter(step, at), at).unwrap().join("\n");
+            assert!(!wrote.contains("under way"), "{wrote}");
+        }
+        assert!(!watch.underway && watch.track.is_none());
+        assert_eq!(watch.day.distance_nm, 0.0);
+        assert_eq!(watch.day.max_sog_kn, 0.0);
+    }
+
+    #[test]
+    fn jitter_without_sog_in_a_trip_is_no_run() {
+        let s = settings("jitter-trip");
+        let vault = s.vault.clone();
+        let start = 1_789_300_800;
+        mark(&vault, start, "Departed");
+        let mut watch = Watch::new(s, start).unwrap();
+        for step in 0..=120 {
+            let at = start + 30 + step;
+            watch.update(jitter(step, at), at).unwrap();
+        }
+        assert!(watch.underway && watch.track.is_some());
+        assert!(watch.day.underway_secs <= 5, "{}", watch.day.underway_secs);
+        assert!(watch.day.distance_nm < 0.05, "{}", watch.day.distance_nm);
+        assert_eq!(watch.day.max_sog_kn, 0.0);
     }
 }

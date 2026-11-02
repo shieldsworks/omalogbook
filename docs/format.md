@@ -113,8 +113,9 @@ last look. A month of notes with no mark at all closes it too. A mark added to
 or struck from an earlier day's note is picked up within ten minutes; today's
 note is watched for changes. Marks in one minute are ordered as
 the note lists them. A note that can't be read, or a note with no entries at
-all, changes nothing. With no speed from the receiver, the speed is worked out
-from the last fix. Fixes below `stopped_kn` during a trip add no distance or time under
+all, changes nothing. With no speed from the receiver, a trip's speed is worked
+out over at least the last 30 seconds of fixes; outside a trip a missing speed
+is no speed, and a worked-out speed is never the day's top speed. Fixes below `stopped_kn` during a trip add no distance or time under
 way. A `Departed` while a passage is
 already open keeps that passage and its track. A recorder started while a trip
 is open, after a reboot, starts a new track file at its first fix; the trip
