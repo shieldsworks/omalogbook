@@ -186,6 +186,17 @@ omalogbook strike 3              # rule a line through one
 Run the recorder as a user service, so it is there before the `/depart` and
 after a reboot. It idles until a trip is open and records until the `/berth`.
 
+A user unit starts with the user's session. To have it start at boot, before
+anyone logs in, turn on lingering once:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+The unit starts after omakeel's user unit. When omakeel runs as a system unit
+that does nothing, and the recorder waits for its socket on its own. On stop it
+commits the day and its track and does not push; the vault's own backup pushes.
+
 Settings live in `~/.config/omalogbook/config.toml`. Every one is optional:
 
 ```toml
