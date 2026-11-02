@@ -183,6 +183,9 @@ omalogbook amend 1 "..."         # change an entry's words
 omalogbook strike 3              # rule a line through one
 ```
 
+Run the recorder as a user service, so it is there before the `/depart` and
+after a reboot. It idles until a trip is open and records until the `/berth`.
+
 Settings live in `~/.config/omalogbook/config.toml`. Every one is optional:
 
 ```toml

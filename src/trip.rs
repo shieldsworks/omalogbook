@@ -95,6 +95,13 @@ pub fn summary(vault: &Path, now: i64, underway_kn: f64) -> Vec<String> {
     words(depart, now, &marks, &points, underway_kn)
 }
 
+/// Whether a trip is open at `now`: a `Departed` with no `Berthed` after
+/// it, within the last month. The recorder keeps a track for as long as
+/// this holds.
+pub fn is_open(vault: &Path, now: i64) -> bool {
+    matches!(marks_since_departure(vault, now), Since::Departed(_))
+}
+
 /// Look back from `now`, up to a month, for the trip's start.
 fn marks_since_departure(vault: &Path, now: i64) -> Since {
     let mut later: Vec<Mark> = Vec::new();
