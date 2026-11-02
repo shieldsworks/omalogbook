@@ -5,6 +5,7 @@
 #     ~/.config/systemd/user/omalogbook.service
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now omalogbook.service
+#   loginctl enable-linger "$USER"   # start at boot, before login
 [Unit]
 Description=omalogbook recorder: the ship's log and the GPX track of each trip
 After=omakeel.service
@@ -14,7 +15,6 @@ Wants=omakeel.service
 ExecStart=%h/.cargo/bin/omalogbook run
 Restart=always
 RestartSec=5
-KillSignal=SIGTERM
 TimeoutStopSec=30
 
 [Install]

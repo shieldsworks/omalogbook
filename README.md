@@ -194,6 +194,19 @@ systemctl --user enable --now omalogbook.service
 
 The unit runs `~/.cargo/bin/omalogbook`; edit `ExecStart` for another path.
 
+A user unit starts with the user's session. To have it start at boot, before
+anyone logs in, turn on lingering once:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+`Wants=omakeel.service` and `After=omakeel.service` name omakeel's user unit.
+When omakeel runs as a system unit they do nothing, and the recorder waits for
+its socket on its own. On stop it commits the day and its track and does not
+push, so it finishes well inside `TimeoutStopSec`; the vault's own backup
+pushes.
+
 Settings live in `~/.config/omalogbook/config.toml`. Every one is optional:
 
 ```toml
