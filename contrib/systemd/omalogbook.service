@@ -1,0 +1,21 @@
+# The recorder, always on. It idles until a /depart is in the notes, records
+# the track until the /berth after it, and picks the trip up again after a
+# reboot. Install:
+#   install -Dm644 contrib/systemd/omalogbook.service \
+#     ~/.config/systemd/user/omalogbook.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now omalogbook.service
+#   loginctl enable-linger "$USER"   # start at boot, before login
+[Unit]
+Description=omalogbook recorder: the ship's log and the GPX track of each trip
+After=omakeel.service
+Wants=omakeel.service
+
+[Service]
+ExecStart=%h/.cargo/bin/omalogbook run
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
