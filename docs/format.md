@@ -78,6 +78,8 @@ Entries are written when:
 
 - the log opens, or the fix comes back after being lost
 - the boat gets under way, and when the passage ends
+- a trip opens (`departed; track started`) or closes (`berthed; the track is
+  closed`), as read from the marks
 - every `every_minutes` while under way
 - you write one with `omalogbook note`
 - the receiver's clock disagrees with this machine's, once
@@ -101,6 +103,14 @@ A passage ends when the boat has been below `stopped_kn` for
 `stop_after_minutes`. Only making way again — `underway_kn` or more — restarts
 that countdown, so a boat swinging at anchor doesn't hold a passage open all
 night.
+
+A trip is a `Departed` mark with no `Berthed` after it. `omalogbook run` reads
+the notes for one every ten seconds. While a trip is open the passage starts at
+the next fix whatever the speed, and neither stillness nor a lost fix ends it;
+the `Berthed` mark does, within ten seconds. A `Departed` while a passage is
+already open keeps that passage and its track. A recorder started while a trip
+is open, after a reboot, starts a new track file at its first fix; the trip
+reads every track between its two marks, so the total still covers it.
 
 ## The track
 

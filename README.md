@@ -183,6 +183,17 @@ omalogbook amend 1 "..."         # change an entry's words
 omalogbook strike 3              # rule a line through one
 ```
 
+Run the recorder as a user service, so it is there before the `/depart` and
+after a reboot. It idles until a trip is open and records until the `/berth`:
+
+```sh
+install -Dm644 contrib/systemd/omalogbook.service ~/.config/systemd/user/omalogbook.service
+systemctl --user daemon-reload
+systemctl --user enable --now omalogbook.service
+```
+
+The unit runs `~/.cargo/bin/omalogbook`; edit `ExecStart` for another path.
+
 Settings live in `~/.config/omalogbook/config.toml`. Every one is optional:
 
 ```toml
