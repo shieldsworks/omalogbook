@@ -90,7 +90,7 @@ fn parse_with(
     chosen_vault: Option<&Path>,
     home: Option<OsString>,
 ) -> Result<(Settings, Vec<String>), NoHome> {
-    let mut boat = String::from("Dash");
+    let mut boat = String::from("Boat");
     let mut every_minutes: u32 = 60;
     let mut underway_kn = 1.0;
     let mut stopped_kn = DEFAULT_STOPPED_KN;
@@ -222,7 +222,7 @@ mod tests {
             s,
             Settings {
                 vault: PathBuf::from("/home/ada/Logbook"),
-                boat: "Dash".into(),
+                boat: "Boat".into(),
                 every_minutes: 60,
                 underway_kn: 1.0,
                 stopped_kn: 0.5,

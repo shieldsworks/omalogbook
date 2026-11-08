@@ -89,6 +89,8 @@ pub struct Watch {
     warned_clock: bool,
     /// Said once, when omakeel speaks a protocol this doesn't know.
     warned_version: bool,
+    /// Said once per stretch of demo sail; cleared when a real source appears.
+    warned_demo: bool,
     /// When a current fix last arrived, by this machine's clock, so a passage
     /// can't outlive it. The receiver's own clock is no use here: the two are
     /// allowed to differ, and comparing across them would close a passage on
@@ -126,6 +128,7 @@ impl Watch {
             opened: false,
             warned_clock: false,
             warned_version: false,
+            warned_demo: false,
             last_fix: 0,
             last_save: 0,
             outage: None,
@@ -137,6 +140,8 @@ impl Watch {
 
     /// One update from omakeel. Returns what it wrote, for the terminal.
     pub fn update(&mut self, update: keel::Update, now: i64) -> io::Result<Vec<String>> {
+        // The demo warning is given once per run of demo updates.
+        self.warned_demo &= matches!(update, keel::Update::Demo);
         match update {
             keel::Update::Fix(fix, unwell) => {
                 self.remember_unwell(unwell, now);
@@ -144,6 +149,16 @@ impl Watch {
             }
             keel::Update::NoFix(why) => self.lost(why, now),
             keel::Update::Lost => self.lost(keel::Why::Hub, now),
+            keel::Update::Demo => {
+                if self.warned_demo {
+                    return Ok(Vec::new());
+                }
+                self.warned_demo = true;
+                Ok(vec![
+                    "omalogbook: omakeel is playing the demo sail; nothing is logged until a real source connects"
+                        .into(),
+                ])
+            }
             keel::Update::Incompatible(v) => {
                 // Every message would otherwise be an entry, all day long.
                 if self.warned_version {
@@ -974,6 +989,23 @@ mod tests {
                 .unwrap();
         }
         (watch, start + 20)
+    }
+
+    #[test]
+    fn the_demo_sail_is_not_logged_until_a_real_source_appears() {
+        let (mut watch, t) = under_way("demo");
+        watch.close().unwrap();
+        let before = fs::read_to_string(watch.day_path()).unwrap();
+        let first = watch.update(keel::Update::Demo, t + 1).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].contains("demo sail"), "{first:?}");
+        assert!(watch.update(keel::Update::Demo, t + 2).unwrap().is_empty());
+        watch.close().unwrap();
+        assert_eq!(fs::read_to_string(watch.day_path()).unwrap(), before);
+        watch
+            .update(fix(37.8700, -122.3148, 5.0, t + 4), t + 4)
+            .unwrap();
+        assert!(watch.update(keel::Update::Demo, t + 5).unwrap().len() == 1);
     }
 
     #[test]

@@ -187,7 +187,7 @@ Settings live in `~/.config/omalogbook/config.toml`. Every one is optional:
 
 ```toml
 vault = "~/Logbook"       # the folder of notes; a git repo if you make one
-boat = "Dash"
+boat = "Boat"            # the name on each note; "Boat" until you set it
 every_minutes = 60        # how often to log a position while under way
 underway_kn = 1.0         # speed over ground that starts a passage
 stopped_kn = 0.5          # and what counts as still
@@ -197,8 +197,12 @@ git = true                # commit the vault as the log is written
 ```
 
 To keep the log going with the laptop closed, run it beside omakeel as a user
-service, or start it from your session. It writes nothing until omakeel has a
-position.
+service, or start it from your session. `dist/omalogbook.service` is a systemd
+user unit for it: copy it to `~/.config/systemd/user/`, put the binary at
+`~/.local/bin/omalogbook`, and `systemctl --user enable --now omalogbook`. It
+writes nothing until omakeel has a position, and nothing while omakeel's only
+sources are the `demo` sail. It says so once, and starts logging when a real
+source appears.
 
 ## The window
 

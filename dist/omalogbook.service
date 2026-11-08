@@ -1,0 +1,11 @@
+[Unit]
+Description=omalogbook: the boat's log
+After=omakeel.service
+
+[Service]
+ExecStart=%h/.local/bin/omalogbook run
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
