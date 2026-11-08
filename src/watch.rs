@@ -140,17 +140,8 @@ impl Watch {
 
     /// One update from omakeel. Returns what it wrote, for the terminal.
     pub fn update(&mut self, update: keel::Update, now: i64) -> io::Result<Vec<String>> {
-        if matches!(update, keel::Update::Demo) {
-            if self.warned_demo {
-                return Ok(Vec::new());
-            }
-            self.warned_demo = true;
-            return Ok(vec![
-                "omalogbook: omakeel is playing the demo sail; nothing is logged until a real source connects"
-                    .into(),
-            ]);
-        }
-        self.warned_demo = false;
+        // The demo warning is given once per run of demo updates.
+        self.warned_demo &= matches!(update, keel::Update::Demo);
         match update {
             keel::Update::Fix(fix, unwell) => {
                 self.remember_unwell(unwell, now);
@@ -158,7 +149,16 @@ impl Watch {
             }
             keel::Update::NoFix(why) => self.lost(why, now),
             keel::Update::Lost => self.lost(keel::Why::Hub, now),
-            keel::Update::Demo => Ok(Vec::new()),
+            keel::Update::Demo => {
+                if self.warned_demo {
+                    return Ok(Vec::new());
+                }
+                self.warned_demo = true;
+                Ok(vec![
+                    "omalogbook: omakeel is playing the demo sail; nothing is logged until a real source connects"
+                        .into(),
+                ])
+            }
             keel::Update::Incompatible(v) => {
                 // Every message would otherwise be an entry, all day long.
                 if self.warned_version {
