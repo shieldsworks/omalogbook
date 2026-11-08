@@ -70,6 +70,9 @@ pub enum Update {
     NoFix(Why),
     /// Not connected to omakeel.
     Lost,
+    /// omakeel's only sources are named `demo`: the sail it plays is not
+    /// this boat, so there is nothing to log.
+    Demo,
     /// omakeel speaks another protocol version.
     Incompatible(u64),
 }
@@ -172,6 +175,9 @@ pub fn read(line: &str) -> Option<Update> {
 }
 
 fn from_state(fix: &omakeel_protocol::Fix, sources: &[SourceState]) -> Update {
+    if !sources.is_empty() && sources.iter().all(|source| source.name == "demo") {
+        return Update::Demo;
+    }
     let links = unwell(sources);
     if let Some(position) = fix.position().filter(|position| position.current)
         && (-90.0..=90.0).contains(&position.place.lat)
@@ -252,7 +258,7 @@ pub fn once(socket: &Path, wait: Duration) -> Option<Fix> {
             Ok(0) | Err(_) => return None,
             Ok(_) => match read(line.trim_end()) {
                 Some(Update::Fix(fix, _)) => return Some(fix),
-                Some(Update::NoFix(_) | Update::Incompatible(_)) => return None,
+                Some(Update::NoFix(_) | Update::Demo | Update::Incompatible(_)) => return None,
                 _ => {}
             },
         }
@@ -328,6 +334,26 @@ mod tests {
         assert_eq!(fix.cog_deg, Some(255.0));
         assert_eq!(fix.utc, Some(1_789_333_210));
         assert_eq!((fix.satellites, fix.hdop), (Some(9), Some(0.9)));
+    }
+
+    #[test]
+    fn only_demo_sources_are_demo() {
+        let with = |sources: &str| {
+            read(&STATE.replace(
+                r#""ageSeconds":0}"#,
+                &format!(r#""ageSeconds":0}},"sources":{sources}"#),
+            ))
+        };
+        let demo = r#"{"name":"demo","status":"ok"}"#;
+        let gps = r#"{"name":"serial:/dev/ttyUSB0:4800","status":"ok"}"#;
+        assert_eq!(with(&format!("[{demo}]")), Some(Update::Demo));
+        assert_eq!(with(&format!("[{demo},{demo}]")), Some(Update::Demo));
+        assert!(matches!(
+            with(&format!("[{demo},{gps}]")),
+            Some(Update::Fix(..))
+        ));
+        assert!(matches!(with("[]"), Some(Update::Fix(..))));
+        assert!(matches!(read(STATE), Some(Update::Fix(..))));
     }
 
     #[test]
