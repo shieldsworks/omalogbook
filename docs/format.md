@@ -109,11 +109,15 @@ A trip is a `Departed` mark with no `Berthed` after it. `omalogbook run` reads
 the notes for one every ten seconds. While a trip is open the passage starts at
 the next fix whatever the speed, and neither stillness nor a lost fix ends it;
 the `Berthed` mark does, at the first GPS update at least ten seconds after the
-last look. A month of notes with no mark at all closes it too. A mark added to
-or struck from an earlier day's note is picked up within ten minutes; today's
-note is watched for changes. Marks in one minute are ordered as
+last look. After a `Berthed`, a speed-based passage does not start again until
+the boat has been at or below `stopped_kn`, or until a new `Departed`: motoring
+into the slip after the mark is still the arrival, not a new passage. A month
+of notes with no mark at all closes it too. A mark added to or struck from an
+earlier day's note is picked up within ten minutes; today's note is watched for
+changes. Marks in one minute are ordered as
 the note lists them. A note that can't be read, or a note with no entries at
-all, changes nothing. With no speed from the receiver, a trip's speed is worked
+all, changes nothing, and an unreadable note is tried again at the next
+ten-second look even if its size and time have not changed. With no speed from the receiver, a trip's speed is worked
 out over at least the last 30 seconds of fixes; outside a trip a missing speed
 is no speed, and a worked-out speed is never the day's top speed. Fixes below `stopped_kn` during a trip add no distance or time under
 way. A `Departed` while a passage is
