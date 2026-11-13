@@ -115,7 +115,8 @@ closed, and the day's note links it when it began between those two marks.
 After a `Berthed`, a speed-based passage does not start again until the boat
 has been seen at or below `stopped_kn`, or until a new `Departed`: motoring
 into the slip after the mark is still the arrival, not a new passage. A missing
-speed is not stillness, and does not lift that hold. The hold is for that
+speed is not stillness, and does not lift that hold. Once the boat has been
+still, a speed-based passage is not closed again by the same berth. The hold is for that
 berth; a later `Departed` and `Berthed` arm it again, even if both marks arrive
 between looks. A month of notes with no mark at all closes an open trip too. A mark added to or struck from an
 earlier day's note is picked up within ten minutes; today's note is watched for

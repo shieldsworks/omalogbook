@@ -241,28 +241,33 @@ impl Watch {
             trip::State::Berthed { departed, berthed } => {
                 self.trip_seen = Some((today, stamp, now));
                 self.trip_open = None;
-                if self.held_berth != Some(berthed) {
+                // Close a recording passage only the first time this berth
+                // is seen. A later speed-based passage, after the boat has
+                // been still, must be left alone.
+                let new_berth = self.held_berth != Some(berthed);
+                if new_berth {
                     self.hold_until_still = true;
                     self.held_berth = Some(berthed);
                 }
-                if !self.underway {
-                    return Ok(Vec::new());
+                if !new_berth || !self.underway {
+                    Ok(Vec::new())
+                } else {
+                    // Close any recording passage, started by the trip or by
+                    // speed. The day's note links it when it began inside this
+                    // trip's window.
+                    let in_trip = self.track.as_ref().is_some_and(|track| {
+                        track.started <= berthed && departed.is_none_or(|d| track.started >= d)
+                    });
+                    self.underway = false;
+                    self.slow_since = None;
+                    self.last = None;
+                    let track = self.end_passage(in_trip)?;
+                    let wrote = self.say(now, "berthed; the track is closed".into())?;
+                    let mut paths = vec![self.day.path.clone()];
+                    paths.extend(track);
+                    self.commit_only(&paths, &format!("log: {} · berthed", self.day.date));
+                    Ok(wrote)
                 }
-                // Close any recording passage, started by the trip or by
-                // speed. The day's note links it when it began inside this
-                // trip's window.
-                let in_trip = self.track.as_ref().is_some_and(|track| {
-                    track.started <= berthed && departed.is_none_or(|d| track.started >= d)
-                });
-                self.underway = false;
-                self.slow_since = None;
-                self.last = None;
-                let track = self.end_passage(in_trip)?;
-                let wrote = self.say(now, "berthed; the track is closed".into())?;
-                let mut paths = vec![self.day.path.clone()];
-                paths.extend(track);
-                self.commit_only(&paths, &format!("log: {} · berthed", self.day.date));
-                Ok(wrote)
             }
             trip::State::None => {
                 self.trip_seen = Some((today, stamp, now));
@@ -2227,6 +2232,38 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(wrote.contains("under way"), "{wrote}");
+    }
+
+    #[test]
+    fn a_passage_started_after_the_berth_hold_stays_open() {
+        let s = settings("trip-berth-then-sail");
+        let vault = s.vault.clone();
+        let start = 1_789_300_800;
+        mark(&vault, start, "Departed");
+        mark(&vault, start + 300, "Berthed");
+        let mut watch = Watch::new(s, start + 310).unwrap();
+        still(&mut watch, start + 320, 30);
+        let going = start + 360;
+        let wrote = watch
+            .update(fix(37.8663, -122.3148, 5.0, going), going)
+            .unwrap()
+            .join("\n");
+        assert!(wrote.contains("under way"), "{wrote}");
+        let mut wrote = String::new();
+        for step in 1..=30 {
+            let at = going + step * 10;
+            wrote.push_str(
+                &watch
+                    .update(fix(37.8663 + step as f64 * 0.0005, -122.3148, 5.0, at), at)
+                    .unwrap()
+                    .join("\n"),
+            );
+            wrote.push('\n');
+        }
+        assert!(!wrote.contains("berthed; the track is closed"), "{wrote}");
+        assert!(!wrote.contains("under way"), "{wrote}");
+        assert!(watch.underway);
+        assert_eq!(tracks_in(&vault).len(), 1);
     }
 
     #[test]
