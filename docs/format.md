@@ -78,6 +78,9 @@ Entries are written when:
 
 - the log opens, or the fix comes back after being lost
 - the boat gets under way, and when the passage ends
+- a trip opens (`departed; track started`), is picked up again after a
+  restart (`track resumed`), or closes (`berthed; the track is
+  closed`), as read from the marks
 - every `every_minutes` while under way
 - you write one with `omalogbook note`
 - the receiver's clock disagrees with this machine's, once
@@ -101,6 +104,33 @@ A passage ends when the boat has been below `stopped_kn` for
 `stop_after_minutes`. Only making way again — `underway_kn` or more — restarts
 that countdown, so a boat swinging at anchor doesn't hold a passage open all
 night.
+
+A trip is a `Departed` mark with no `Berthed` after it. `omalogbook run` reads
+the notes for one every ten seconds, and each look takes the trip from what the
+notes say: whether the latest `Departed` has a later `Berthed`, and which berth
+that is. While a trip is open the passage starts at the next fix whatever the
+speed, and neither stillness nor a lost fix ends it. When the notes show a
+closed trip, a passage still recording — started by the trip or by speed — is
+closed, and the day's note links it when it began between those two marks.
+After a `Berthed`, a speed-based passage does not start again until the boat
+has been seen at or below `stopped_kn`, or until a new `Departed`: motoring
+into the slip after the mark is still the arrival, not a new passage. A missing
+speed is not stillness, and does not lift that hold. Once the boat has been
+still, a speed-based passage is not closed again by the same berth. The hold is for that
+berth; a later `Departed` and `Berthed` arm it again, even if both marks arrive
+between looks. A month of notes with no mark at all closes an open trip too. A mark added to or struck from an
+earlier day's note is picked up within ten minutes; today's note is watched for
+changes. Marks in one minute are ordered as
+the note lists them. Two `Berthed` marks in the same minute cannot be told
+apart, because the notes keep only the minute. A note that can't be read, or a note with no entries at
+all, changes nothing, and an unreadable note is tried again at the next
+ten-second look even if its size and time have not changed. With no speed from the receiver, a trip's speed is worked
+out over at least the last 30 seconds of fixes; outside a trip a missing speed
+is no speed, and a worked-out speed is never the day's top speed. Fixes below `stopped_kn` during a trip add no distance or time under
+way. A `Departed` while a passage is
+already open keeps that passage and its track. A recorder started while a trip
+is open, after a reboot, starts a new track file at its first fix; the trip
+reads every track between its two marks, so the total still covers it.
 
 ## The track
 

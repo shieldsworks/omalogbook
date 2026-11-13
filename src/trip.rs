@@ -71,11 +71,14 @@ enum Leg {
 enum Since {
     /// The latest `Departed` and every mark after it, oldest first.
     Departed(Vec<Mark>),
-    /// A `Berthed` came first: that trip is over, and this one had no
-    /// `/depart`.
-    Berthed,
+    /// A `Berthed` came first: that trip is over. `berthed` is that mark's
+    /// time; `departed` is the `Departed` that opened it, when the notes
+    /// have one.
+    Berthed { departed: Option<i64>, berthed: i64 },
     /// Nothing either way in the last month.
     Nothing,
+    /// A note on the way back exists but could not be read.
+    Unreadable,
 }
 
 /// The trip's figures, worded, one part per item, for the mark's line.
@@ -85,14 +88,44 @@ enum Since {
 pub fn summary(vault: &Path, now: i64, underway_kn: f64) -> Vec<String> {
     let marks = match marks_since_departure(vault, now) {
         Since::Departed(marks) => marks,
-        Since::Berthed => return vec![NO_DEPART.to_string()],
-        Since::Nothing => return Vec::new(),
+        Since::Berthed { .. } => return vec![NO_DEPART.to_string()],
+        Since::Nothing | Since::Unreadable => return Vec::new(),
     };
     let Some(depart) = marks.first().map(|m| m.epoch) else {
         return Vec::new();
     };
     let points = points_between(vault, depart, now);
     words(depart, now, &marks, &points, underway_kn)
+}
+
+/// What the notes say about the trip at one moment, for the recorder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum State {
+    /// A `Departed` with no `Berthed` after it, made at this epoch.
+    Open(i64),
+    /// A `Berthed` with no `Departed` after it, made at this epoch. The
+    /// `Departed` that opened that trip is included when the notes have one.
+    Berthed { departed: Option<i64>, berthed: i64 },
+    /// Every note in the last month read, and not one mark in them: no
+    /// trip is open, whatever was open before.
+    None,
+    /// A note that could not be read, or one caught with no entries at all,
+    /// as it is while being written, before any mark was found. It changes
+    /// nothing.
+    Unknown,
+}
+
+/// The trip at `now`, within the last month. The recorder keeps a track
+/// while it is `Open` and closes it only on `Berthed`.
+pub fn state(vault: &Path, now: i64) -> State {
+    match marks_since_departure(vault, now) {
+        Since::Departed(marks) => marks
+            .first()
+            .map_or(State::Unknown, |m| State::Open(m.epoch)),
+        Since::Berthed { departed, berthed } => State::Berthed { departed, berthed },
+        Since::Nothing => State::None,
+        Since::Unreadable => State::Unknown,
+    }
 }
 
 /// Look back from `now`, up to a month, for the trip's start.
@@ -102,15 +135,38 @@ fn marks_since_departure(vault: &Path, now: i64) -> Since {
     let Some(today_index) = time::day_index(&today) else {
         return Since::Nothing;
     };
+    // A note with no entries at all is one caught mid-write or emptied by
+    // hand. Its marks are not known, so finding none anywhere proves nothing.
+    let mut blank = false;
+    let mut berthed = None;
     for back in 0..=MAX_DAYS {
         let date = time::utc((today_index - back) * 86_400).date();
-        let mut marks = marks_on(vault, &date);
-        marks.retain(|m| m.epoch <= now);
-        // Newest first, so the first `Departed` found is the latest.
-        marks.sort_by_key(|m| std::cmp::Reverse(m.epoch));
-        for m in marks {
+        let Some((marks, empty)) = marks_on(vault, &date) else {
+            return Since::Unreadable;
+        };
+        blank |= empty;
+        // Newest first, so the first `Departed` found is the latest. Marks
+        // in one minute share an epoch; the later line in the note is the
+        // later mark.
+        let mut marks: Vec<(usize, Mark)> = marks
+            .into_iter()
+            .enumerate()
+            .filter(|(_, m)| m.epoch <= now)
+            .collect();
+        marks.sort_by_key(|(i, m)| std::cmp::Reverse((m.epoch, *i)));
+        for (_, m) in marks {
+            if let Some(ended) = berthed {
+                if m.label == DEPARTED {
+                    return Since::Berthed {
+                        departed: Some(m.epoch),
+                        berthed: ended,
+                    };
+                }
+                continue;
+            }
             if m.label == ENDED {
-                return Since::Berthed;
+                berthed = Some(m.epoch);
+                continue;
             }
             let departed = m.label == DEPARTED;
             later.push(m);
@@ -120,15 +176,29 @@ fn marks_since_departure(vault: &Path, now: i64) -> Since {
             }
         }
     }
-    Since::Nothing
+    if let Some(ended) = berthed {
+        return Since::Berthed {
+            departed: None,
+            berthed: ended,
+        };
+    }
+    if blank {
+        Since::Unreadable
+    } else {
+        Since::Nothing
+    }
 }
 
-/// Every mark in one day's note that nobody has struck through.
-fn marks_on(vault: &Path, date: &str) -> Vec<Mark> {
-    let Some(text) = read_bounded(&day::path_for(vault, date), MAX_NOTE_BYTES) else {
-        return Vec::new();
+/// Every mark in one day's note that nobody has struck through, in the
+/// note's order, and whether the note is there with no entries at all. No
+/// note is no marks; a note that is there and can't be read is `None`.
+fn marks_on(vault: &Path, date: &str) -> Option<(Vec<Mark>, bool)> {
+    let path = day::path_for(vault, date);
+    let Some(text) = read_bounded(&path, MAX_NOTE_BYTES) else {
+        return (!path.exists()).then(|| (Vec::new(), false));
     };
-    day::entries_in(&text)
+    let entries = day::entries_in(&text);
+    let marks = entries
         .iter()
         .filter(|line| !day::is_struck(line))
         .filter_map(|line| {
@@ -136,7 +206,8 @@ fn marks_on(vault: &Path, date: &str) -> Vec<Mark> {
             let label = label_of(line)?;
             Some(Mark { epoch, label })
         })
-        .collect()
+        .collect();
+    Some((marks, entries.is_empty()))
 }
 
 /// The mark an entry is, if it is one: the preset's label that opens what
@@ -690,5 +761,110 @@ mod tests {
         let points = gpx_points(text);
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].sog_kn, None);
+    }
+
+    #[test]
+    fn marks_in_one_minute_keep_the_notes_order() {
+        let closed = vault("same-minute");
+        note(
+            &closed,
+            START,
+            &[
+                mark_line(START, "Departed"),
+                mark_line(START + 20, "Berthed"),
+            ],
+        );
+        // Both marks fall in the same minute, so they share an epoch; the
+        // later line is the `Berthed`.
+        assert_eq!(
+            state(&closed, START + 60),
+            State::Berthed {
+                departed: Some(START),
+                berthed: START,
+            }
+        );
+        let reopened = vault("same-minute-reopen");
+        note(
+            &reopened,
+            START,
+            &[
+                mark_line(START, "Berthed"),
+                mark_line(START + 20, "Departed"),
+            ],
+        );
+        assert!(matches!(state(&reopened, START + 60), State::Open(_)));
+    }
+
+    #[test]
+    fn a_closed_trip_carries_its_departed_and_berthed() {
+        let v = vault("closed-window");
+        note(
+            &v,
+            START,
+            &[
+                mark_line(START, "Departed"),
+                mark_line(START + 3600, "Berthed"),
+            ],
+        );
+        assert_eq!(
+            state(&v, START + 4000),
+            State::Berthed {
+                departed: Some(START),
+                berthed: START + 3600,
+            }
+        );
+    }
+
+    #[test]
+    fn a_berthed_with_no_departed_has_no_window() {
+        let v = vault("berth-only");
+        note(&v, START, &[mark_line(START, "Berthed")]);
+        assert_eq!(
+            state(&v, START + 60),
+            State::Berthed {
+                departed: None,
+                berthed: START,
+            }
+        );
+    }
+
+    #[test]
+    fn a_blank_note_says_nothing_about_the_trip() {
+        let vault = vault("blank");
+        note(&vault, START, &[mark_line(START, "Departed")]);
+        let path = day::path_for(&vault, &time::local(START).date());
+        let kept = fs::read_to_string(&path).unwrap();
+        fs::write(&path, "").unwrap();
+        assert_eq!(state(&vault, START + 60), State::Unknown);
+        fs::write(&path, kept).unwrap();
+        assert!(matches!(state(&vault, START + 60), State::Open(_)));
+    }
+
+    #[test]
+    fn no_mark_in_the_month_is_no_trip() {
+        let old = vault("departed-long-ago");
+        note(&old, START, &[mark_line(START, "Departed")]);
+        assert!(matches!(state(&old, START + 60), State::Open(_)));
+        let later = START + 40 * 86_400;
+        note(
+            &old,
+            later,
+            &[crate::entry::event(
+                time::local(later),
+                time::utc(later),
+                "a note",
+            )],
+        );
+        assert_eq!(state(&old, later + 60), State::None);
+    }
+
+    #[test]
+    fn a_blank_note_today_does_not_hide_yesterdays_departure() {
+        let dir = vault("blank-today");
+        note(&dir, START, &[mark_line(START, "Departed")]);
+        let next = START + 86_400;
+        let path = day::path_for(&dir, &time::local(next).date());
+        fs::write(&path, "").unwrap();
+        assert!(matches!(state(&dir, next + 60), State::Open(_)));
     }
 }

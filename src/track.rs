@@ -21,6 +21,8 @@ pub struct Point {
 #[derive(Debug)]
 pub struct Track {
     pub relative: String,
+    /// When this passage began, the same moment the file is named for.
+    pub started: i64,
     path: PathBuf,
     name: String,
     points: Vec<Point>,
@@ -40,6 +42,7 @@ impl Track {
         );
         Track {
             path: vault.join(&relative),
+            started: epoch,
             name: format!("{boat} {} {}", at.date(), at.clock()),
             relative,
             points: Vec::new(),
