@@ -106,13 +106,18 @@ that countdown, so a boat swinging at anchor doesn't hold a passage open all
 night.
 
 A trip is a `Departed` mark with no `Berthed` after it. `omalogbook run` reads
-the notes for one every ten seconds. While a trip is open the passage starts at
-the next fix whatever the speed, and neither stillness nor a lost fix ends it;
-the `Berthed` mark does, at the first GPS update at least ten seconds after the
-last look. After a `Berthed`, a speed-based passage does not start again until
-the boat has been at or below `stopped_kn`, or until a new `Departed`: motoring
-into the slip after the mark is still the arrival, not a new passage. A month
-of notes with no mark at all closes it too. A mark added to or struck from an
+the notes for one every ten seconds, and each look takes the trip from what the
+notes say: whether the latest `Departed` has a later `Berthed`, and which berth
+that is. While a trip is open the passage starts at the next fix whatever the
+speed, and neither stillness nor a lost fix ends it. When the notes show a
+closed trip, a passage still recording — started by the trip or by speed — is
+closed, and the day's note links it when it began between those two marks.
+After a `Berthed`, a speed-based passage does not start again until the boat
+has been seen at or below `stopped_kn`, or until a new `Departed`: motoring
+into the slip after the mark is still the arrival, not a new passage. A missing
+speed is not stillness, and does not lift that hold. The hold is for that
+berth; a later `Departed` and `Berthed` arm it again, even if both marks arrive
+between looks. A month of notes with no mark at all closes an open trip too. A mark added to or struck from an
 earlier day's note is picked up within ten minutes; today's note is watched for
 changes. Marks in one minute are ordered as
 the note lists them. A note that can't be read, or a note with no entries at

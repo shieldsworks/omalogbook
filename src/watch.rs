@@ -148,10 +148,9 @@ pub struct Watch {
     /// After a trip closes, a speed-based passage waits until the boat has
     /// been seen at or below `stopped_kn`. A new `Departed` starts one at once.
     hold_until_still: bool,
-    /// This instance has already armed the post-berth hold for the current
-    /// `Berthed` in the notes, so a later look does not arm it again after
-    /// the boat has been seen still.
-    berth_hold_applied: bool,
+    /// The berth this hold is for, by the `Berthed` mark's time. A later
+    /// berth arms it again, even if both marks arrived between looks.
+    held_berth: Option<i64>,
 }
 
 impl Watch {
@@ -185,7 +184,7 @@ impl Watch {
             trip_seen: None,
             started: now,
             hold_until_still: false,
-            berth_hold_applied: false,
+            held_berth: None,
         })
     }
 
@@ -206,9 +205,11 @@ impl Watch {
         Ok(wrote)
     }
 
-    /// Read the notes for the trip, every `TRIP_CHECK_SECS`. A `Berthed`
-    /// closes the passage and its track; an open trip starts them at the
-    /// next fix. Notes that say neither change nothing.
+    /// Read the notes for the trip, every `TRIP_CHECK_SECS`. Each look takes
+    /// the trip from what the notes say now. A closed trip closes a passage
+    /// still recording, and a new berth arms the hold even if this instance
+    /// never saw that trip open. An open trip starts the passage at the next
+    /// fix. Notes that say neither change nothing.
     fn follow_trip(&mut self, now: i64) -> io::Result<Vec<String>> {
         if self
             .trip_checked
@@ -228,46 +229,64 @@ impl Watch {
         {
             return Ok(Vec::new());
         }
-        let (closing, why, at_berth) = match trip::state(&self.vault, now) {
+        match trip::state(&self.vault, now) {
             // An unreadable or mid-write note is not cached: try again at
             // the next look, even if its size and time have not changed.
-            trip::State::Unknown => return Ok(Vec::new()),
+            trip::State::Unknown => Ok(Vec::new()),
             trip::State::Open(departed) => {
                 self.trip_seen = Some((today, stamp, now));
                 self.trip_open = Some(departed);
-                self.berth_hold_applied = false;
-                return Ok(Vec::new());
+                Ok(Vec::new())
             }
-            trip::State::Berthed => ("berthed; the track is closed", "berthed", true),
-            trip::State::None => (
-                "no /depart in the last month; the track is closed",
-                "trip closed",
-                false,
-            ),
-        };
-        self.trip_seen = Some((today, stamp, now));
-        let was_open = self.trip_open.take().is_some();
-        // Motoring into the slip after `Berthed` is still the arrival, even
-        // if this recorder first saw the notes after the mark. Arm the hold
-        // once for this berth, not again after the boat has been seen still.
-        if at_berth && (was_open || !self.berth_hold_applied) {
-            self.hold_until_still = true;
-            self.berth_hold_applied = true;
-        } else if was_open {
-            self.hold_until_still = true;
+            trip::State::Berthed { departed, berthed } => {
+                self.trip_seen = Some((today, stamp, now));
+                self.trip_open = None;
+                if self.held_berth != Some(berthed) {
+                    self.hold_until_still = true;
+                    self.held_berth = Some(berthed);
+                }
+                if !self.underway {
+                    return Ok(Vec::new());
+                }
+                // Close any recording passage, started by the trip or by
+                // speed. The day's note links it when it began inside this
+                // trip's window.
+                let in_trip = self.track.as_ref().is_some_and(|track| {
+                    track.started <= berthed && departed.is_none_or(|d| track.started >= d)
+                });
+                self.underway = false;
+                self.slow_since = None;
+                self.last = None;
+                let track = self.end_passage(in_trip)?;
+                let wrote = self.say(now, "berthed; the track is closed".into())?;
+                let mut paths = vec![self.day.path.clone()];
+                paths.extend(track);
+                self.commit_only(&paths, &format!("log: {} · berthed", self.day.date));
+                Ok(wrote)
+            }
+            trip::State::None => {
+                self.trip_seen = Some((today, stamp, now));
+                let was_open = self.trip_open.take().is_some();
+                if was_open {
+                    self.hold_until_still = true;
+                }
+                if !was_open || !self.underway {
+                    return Ok(Vec::new());
+                }
+                self.underway = false;
+                self.slow_since = None;
+                self.last = None;
+                let track = self.finish_track()?;
+                let wrote = self.say(
+                    now,
+                    "no /depart in the last month; the track is closed".into(),
+                )?;
+                let mut paths = vec![self.day.path.clone()];
+                paths.extend(track);
+                self.commit_only(&paths, &format!("log: {} · trip closed", self.day.date));
+                Ok(wrote)
+            }
         }
-        if !was_open || !self.underway {
-            return Ok(Vec::new());
-        }
-        self.underway = false;
-        self.slow_since = None;
-        self.last = None;
-        let track = self.finish_track()?;
-        let wrote = self.say(now, closing.into())?;
-        let mut paths = vec![self.day.path.clone()];
-        paths.extend(track);
-        self.commit_only(&paths, &format!("log: {} · {why}", self.day.date));
-        Ok(wrote)
     }
 
     /// Remember this fix, and give the speed from the oldest fix in the
@@ -317,10 +336,18 @@ impl Watch {
     /// Save the track under way and link it from the day, if it has points.
     /// Returns the track's file when it has any.
     fn finish_track(&mut self) -> io::Result<Option<PathBuf>> {
+        self.end_passage(true)
+    }
+
+    /// Save the open track. When `link` is set and it has points, the day's
+    /// note names it — a closed trip's passage, if it began in that window.
+    fn end_passage(&mut self, link: bool) -> io::Result<Option<PathBuf>> {
         if let Some(track) = self.track.take() {
             track.save()?;
             if !track.is_empty() {
-                self.day.add_track(&track.relative);
+                if link {
+                    self.day.add_track(&track.relative);
+                }
                 return Ok(Some(self.vault.join(&track.relative)));
             }
         }
@@ -396,18 +423,22 @@ impl Watch {
 
         self.last_fix = now;
         let derived = self.derived_speed(fix.lat, fix.lon, at);
-        // With no trip open a missing speed is no speed, so jitter can't start
-        // a passage. During a trip, the speed over the window stands in.
+        // A missing speed is unknown: it starts no passage and is not
+        // stillness, so it cannot lift the post-berth hold. During a trip,
+        // the speed over the window stands in when the receiver sends none.
         let speed = match fix.sog_kn {
-            Some(sog) => sog,
-            None if self.trip_open.is_some() => derived.unwrap_or(0.0),
-            None => 0.0,
+            Some(sog) => Some(sog),
+            None if self.trip_open.is_some() => derived,
+            None => None,
         };
-        if self.hold_until_still && self.trip_open.is_none() && speed <= self.settings.stopped_kn {
+        if self.hold_until_still
+            && self.trip_open.is_none()
+            && speed.is_some_and(|s| s <= self.settings.stopped_kn)
+        {
             self.hold_until_still = false;
         }
         if !self.underway
-            && (speed >= self.settings.underway_kn || self.trip_open.is_some())
+            && (speed.is_some_and(|s| s >= self.settings.underway_kn) || self.trip_open.is_some())
             && !(self.hold_until_still && self.trip_open.is_none())
         {
             self.hold_until_still = false;
@@ -443,7 +474,8 @@ impl Watch {
 
         // The day's run, and the time it took, from fix to fix. An open trip
         // at the berth or at anchor is not under way: its jitter is no run.
-        let moving = self.trip_open.is_none() || speed > self.settings.stopped_kn;
+        let moving =
+            self.trip_open.is_none() || speed.is_some_and(|s| s > self.settings.stopped_kn);
         if let Some((lat, lon, was)) = self.last {
             let gap = at - was;
             if moving && (0..=MAX_GAP_SECS).contains(&gap) {
@@ -490,13 +522,13 @@ impl Watch {
         // is part of it.
         if self.trip_open.is_some() {
             self.slow_since = None;
-        } else if speed <= self.settings.stopped_kn {
+        } else if speed.is_some_and(|s| s <= self.settings.stopped_kn) {
             let since = *self.slow_since.get_or_insert(at);
             if at - since >= i64::from(self.settings.stop_after_minutes) * 60 {
                 wrote.extend(self.stop(fix, at)?);
                 return Ok(wrote);
             }
-        } else if speed >= self.settings.underway_kn {
+        } else if speed.is_some_and(|s| s >= self.settings.underway_kn) {
             self.slow_since = None;
         }
 
@@ -2033,6 +2065,168 @@ mod tests {
             .join("\n");
         assert!(wrote.contains("departed; track started"), "{wrote}");
         assert!(!wrote.contains("under way"), "{wrote}");
+    }
+
+    #[test]
+    fn a_missing_speed_after_a_berth_does_not_count_as_still() {
+        let s = settings("trip-berth-no-sog");
+        let vault = s.vault.clone();
+        let start = 1_789_300_800;
+        mark(&vault, start, "Departed");
+        mark(&vault, start + 300, "Berthed");
+        let mut watch = Watch::new(s, start + 310).unwrap();
+        let mut wrote = String::new();
+        for step in 0..=30 {
+            let at = start + 320 + step * 10;
+            wrote.push_str(&watch.update(jitter(step, at), at).unwrap().join("\n"));
+            wrote.push('\n');
+        }
+        assert!(!wrote.contains("under way"), "{wrote}");
+        assert!(!watch.underway);
+        let going = start + 320 + 31 * 10;
+        let wrote = watch
+            .update(fix(37.8663, -122.3148, 5.0, going), going)
+            .unwrap()
+            .join("\n");
+        assert!(!wrote.contains("under way"), "{wrote}");
+        still(&mut watch, going + 10, 30);
+        let later = going + 50;
+        let wrote = watch
+            .update(fix(37.8663, -122.3148, 5.0, later), later)
+            .unwrap()
+            .join("\n");
+        assert!(wrote.contains("under way"), "{wrote}");
+    }
+
+    #[test]
+    fn departed_and_berthed_between_looks_closes_the_passage() {
+        let s = settings("trip-missed-pair");
+        let vault = s.vault.clone();
+        let start = 1_789_300_800;
+        let mut watch = Watch::new(s, start).unwrap();
+        let mut wrote = String::new();
+        for step in 0..=5 {
+            let at = start + 30 + step * 10;
+            wrote.push_str(
+                &watch
+                    .update(fix(37.8663 + step as f64 * 0.0005, -122.3148, 5.0, at), at)
+                    .unwrap()
+                    .join("\n"),
+            );
+            wrote.push('\n');
+        }
+        assert!(wrote.contains("under way"), "{wrote}");
+        assert!(watch.underway);
+        mark(&vault, start + 30, "Departed");
+        mark(&vault, start + 85, "Berthed");
+        let look = start + 90;
+        let wrote = watch
+            .update(fix(37.8688, -122.3148, 5.0, look), look)
+            .unwrap()
+            .join("\n");
+        assert!(wrote.contains("berthed; the track is closed"), "{wrote}");
+        assert!(!watch.underway);
+        assert_eq!(tracks_in(&vault).len(), 1);
+        let mut wrote = String::new();
+        for step in 1..=20 {
+            let at = look + step * 10;
+            wrote.push_str(
+                &watch
+                    .update(fix(37.8688, -122.3148, 5.0, at), at)
+                    .unwrap()
+                    .join("\n"),
+            );
+        }
+        assert!(!wrote.contains("under way"), "{wrote}");
+    }
+
+    #[test]
+    fn a_first_look_already_berthed_closes_a_speed_passage() {
+        let s = settings("trip-first-look-berthed");
+        let vault = s.vault.clone();
+        let start = 1_789_300_800;
+        mark(&vault, start, "Departed");
+        mark(&vault, start + 300, "Berthed");
+        let mut watch = Watch::new(s, start + 310).unwrap();
+        let mut wrote = String::new();
+        for step in 0..=2 {
+            let at = start + 310 + step * 10;
+            wrote.push_str(
+                &watch
+                    .apply(fix(37.8663, -122.3148, 5.0, at), at)
+                    .unwrap()
+                    .join("\n"),
+            );
+            wrote.push('\n');
+        }
+        assert!(wrote.contains("under way"), "{wrote}");
+        assert!(watch.underway);
+        let look = start + 340;
+        let wrote = watch.follow_trip(look).unwrap().join("\n");
+        assert!(wrote.contains("berthed; the track is closed"), "{wrote}");
+        assert!(!watch.underway);
+        assert_eq!(tracks_in(&vault).len(), 1);
+        let mut wrote = String::new();
+        for step in 0..=20 {
+            let at = look + 10 + step * 10;
+            wrote.push_str(
+                &watch
+                    .update(fix(37.8663, -122.3148, 5.0, at), at)
+                    .unwrap()
+                    .join("\n"),
+            );
+        }
+        assert!(!wrote.contains("under way"), "{wrote}");
+    }
+
+    #[test]
+    fn a_second_missed_pair_rearms_the_hold() {
+        let s = settings("trip-second-missed-pair");
+        let vault = s.vault.clone();
+        let start = 1_789_300_800;
+        mark(&vault, start, "Departed");
+        mark(&vault, start + 300, "Berthed");
+        let mut watch = Watch::new(s, start + 310).unwrap();
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, start + 320), start + 320)
+            .unwrap();
+        assert!(!watch.underway);
+        still(&mut watch, start + 330, 30);
+        let going = start + 370;
+        let wrote = watch
+            .update(fix(37.8663, -122.3148, 5.0, going), going)
+            .unwrap()
+            .join("\n");
+        assert!(wrote.contains("under way"), "{wrote}");
+        assert!(watch.underway);
+        mark(&vault, going + 1, "Departed");
+        mark(&vault, going + 8, "Berthed");
+        let look = going + 10;
+        let wrote = watch
+            .update(fix(37.8663, -122.3148, 5.0, look), look)
+            .unwrap()
+            .join("\n");
+        assert!(wrote.contains("berthed; the track is closed"), "{wrote}");
+        assert!(!watch.underway);
+        let mut wrote = String::new();
+        for step in 1..=20 {
+            let at = look + step * 10;
+            wrote.push_str(
+                &watch
+                    .update(fix(37.8663, -122.3148, 5.0, at), at)
+                    .unwrap()
+                    .join("\n"),
+            );
+        }
+        assert!(!wrote.contains("under way"), "{wrote}");
+        let still_from = look + 21 * 10;
+        still(&mut watch, still_from, 30);
+        let later = still_from + 40;
+        let wrote = watch
+            .update(fix(37.8663, -122.3148, 5.0, later), later)
+            .unwrap()
+            .join("\n");
+        assert!(wrote.contains("under way"), "{wrote}");
     }
 
     #[test]
