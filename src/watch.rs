@@ -148,6 +148,10 @@ pub struct Watch {
     /// After a trip closes, a speed-based passage waits until the boat has
     /// been seen at or below `stopped_kn`. A new `Departed` starts one at once.
     hold_until_still: bool,
+    /// This instance has already armed the post-berth hold for the current
+    /// `Berthed` in the notes, so a later look does not arm it again after
+    /// the boat has been seen still.
+    berth_hold_applied: bool,
 }
 
 impl Watch {
@@ -181,6 +185,7 @@ impl Watch {
             trip_seen: None,
             started: now,
             hold_until_still: false,
+            berth_hold_applied: false,
         })
     }
 
@@ -223,27 +228,32 @@ impl Watch {
         {
             return Ok(Vec::new());
         }
-        let (closing, why) = match trip::state(&self.vault, now) {
+        let (closing, why, at_berth) = match trip::state(&self.vault, now) {
             // An unreadable or mid-write note is not cached: try again at
             // the next look, even if its size and time have not changed.
             trip::State::Unknown => return Ok(Vec::new()),
             trip::State::Open(departed) => {
                 self.trip_seen = Some((today, stamp, now));
                 self.trip_open = Some(departed);
+                self.berth_hold_applied = false;
                 return Ok(Vec::new());
             }
-            trip::State::Berthed => ("berthed; the track is closed", "berthed"),
+            trip::State::Berthed => ("berthed; the track is closed", "berthed", true),
             trip::State::None => (
                 "no /depart in the last month; the track is closed",
                 "trip closed",
+                false,
             ),
         };
         self.trip_seen = Some((today, stamp, now));
         let was_open = self.trip_open.take().is_some();
-        if was_open {
-            // Motoring into the slip after `Berthed` is still the arrival,
-            // not a new passage. Wait until the boat is still, or a new
-            // `Departed`.
+        // Motoring into the slip after `Berthed` is still the arrival, even
+        // if this recorder first saw the notes after the mark. Arm the hold
+        // once for this berth, not again after the boat has been seen still.
+        if at_berth && (was_open || !self.berth_hold_applied) {
+            self.hold_until_still = true;
+            self.berth_hold_applied = true;
+        } else if was_open {
             self.hold_until_still = true;
         }
         if !was_open || !self.underway {
@@ -1973,6 +1983,59 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_after_berth_while_moving_does_not_start_a_passage() {
+        let s = settings("trip-restart-after-berth");
+        let vault = s.vault.clone();
+        let start = 1_789_300_800;
+        mark(&vault, start, "Departed");
+        mark(&vault, start + 300, "Berthed");
+        let mut watch = Watch::new(s, start + 310).unwrap();
+        let mut wrote = String::new();
+        for step in 0..=30 {
+            let at = start + 320 + step * 10;
+            wrote.push_str(
+                &watch
+                    .update(fix(37.8663, -122.3148, 5.0, at), at)
+                    .unwrap()
+                    .join("\n"),
+            );
+            wrote.push('\n');
+        }
+        assert!(!wrote.contains("under way"), "{wrote}");
+        assert!(tracks_in(&vault).is_empty());
+        let still_from = start + 320 + 31 * 10;
+        still(&mut watch, still_from, 30);
+        // A later look at the same `Berthed` must not arm the hold again.
+        let going = still_from + 40;
+        let wrote = watch
+            .update(fix(37.8663, -122.3148, 5.0, going), going)
+            .unwrap()
+            .join("\n");
+        assert!(wrote.contains("under way"), "{wrote}");
+    }
+
+    #[test]
+    fn a_new_departed_after_a_restart_at_the_berth_starts_at_once() {
+        let s = settings("trip-restart-berth-depart");
+        let vault = s.vault.clone();
+        let start = 1_789_300_800;
+        mark(&vault, start, "Departed");
+        mark(&vault, start + 300, "Berthed");
+        let mut watch = Watch::new(s, start + 310).unwrap();
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, start + 320), start + 320)
+            .unwrap();
+        assert!(!watch.underway);
+        mark(&vault, start + 330, "Departed");
+        let wrote = watch
+            .update(fix(37.8663, -122.3148, 5.0, start + 340), start + 340)
+            .unwrap()
+            .join("\n");
+        assert!(wrote.contains("departed; track started"), "{wrote}");
+        assert!(!wrote.contains("under way"), "{wrote}");
+    }
+
+    #[test]
     fn the_demo_sail_is_not_logged_with_an_open_trip_including_across_midnight() {
         let s = settings("trip-demo-midnight");
         let vault = s.vault.clone();
@@ -2016,6 +2079,35 @@ mod tests {
         assert!(!day::path_for(&vault, &time::local(midnight).date()).exists());
         assert_eq!(tracks_in(&vault), tracks_before);
         assert_eq!(fs::read_to_string(&tracks_before[0]).unwrap(), track_before);
+    }
+
+    #[test]
+    fn the_demo_sail_writes_nothing_while_a_trip_is_already_recording() {
+        let s = settings("trip-demo-live");
+        let vault = s.vault.clone();
+        let start = 1_789_300_800;
+        mark(&vault, start, "Departed");
+        let mut watch = Watch::new(s, start).unwrap();
+        watch
+            .update(fix(37.8663, -122.3148, 5.0, start + 30), start + 30)
+            .unwrap();
+        let before = fs::read_to_string(watch.day_path()).unwrap();
+        let tracks = tracks_in(&vault);
+        assert_eq!(tracks.len(), 1);
+        let track_before = fs::read_to_string(&tracks[0]).unwrap();
+        let first = watch.update(keel::Update::Demo, start + 40).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].contains("demo sail"), "{first:?}");
+        assert!(
+            watch
+                .update(keel::Update::Demo, start + 50)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(fs::read_to_string(watch.day_path()).unwrap(), before);
+        assert_eq!(tracks_in(&vault), tracks);
+        assert_eq!(fs::read_to_string(&tracks[0]).unwrap(), track_before);
+        assert!(watch.trip_open.is_some() && watch.track.is_some());
     }
 
     #[test]
