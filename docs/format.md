@@ -121,7 +121,8 @@ berth; a later `Departed` and `Berthed` arm it again, even if both marks arrive
 between looks. A month of notes with no mark at all closes an open trip too. A mark added to or struck from an
 earlier day's note is picked up within ten minutes; today's note is watched for
 changes. Marks in one minute are ordered as
-the note lists them. A note that can't be read, or a note with no entries at
+the note lists them. Two `Berthed` marks in the same minute cannot be told
+apart, because the notes keep only the minute. A note that can't be read, or a note with no entries at
 all, changes nothing, and an unreadable note is tried again at the next
 ten-second look even if its size and time have not changed. With no speed from the receiver, a trip's speed is worked
 out over at least the last 30 seconds of fixes; outside a trip a missing speed

@@ -256,7 +256,10 @@ impl Watch {
                     // speed. The day's note links it when it began inside this
                     // trip's window.
                     let in_trip = self.track.as_ref().is_some_and(|track| {
-                        track.started <= berthed && departed.is_none_or(|d| track.started >= d)
+                        // Notes keep only the minute, so a start later in
+                        // the same minute as a mark still falls in the window.
+                        let started = track.started - track.started.rem_euclid(60);
+                        started <= berthed && departed.is_none_or(|d| started >= d)
                     });
                     self.underway = false;
                     self.slow_since = None;
@@ -2182,6 +2185,45 @@ mod tests {
             );
         }
         assert!(!wrote.contains("under way"), "{wrote}");
+    }
+
+    #[test]
+    fn a_passage_started_and_berthed_in_the_same_minute_is_linked() {
+        let s = settings("trip-same-minute-window");
+        let vault = s.vault.clone();
+        let mut noon = 1_789_300_800;
+        for candidate in noon - 12 * 3600..noon + 36 * 3600 {
+            let t = time::local(candidate);
+            if t.hour == 12 && t.minute == 0 && t.second == 0 {
+                noon = candidate;
+                break;
+            }
+        }
+        assert_eq!(
+            (
+                time::local(noon).hour,
+                time::local(noon).minute,
+                time::local(noon).second
+            ),
+            (12, 0, 0)
+        );
+        mark(&vault, noon, "Departed");
+        mark(&vault, noon + 40, "Berthed");
+        let mut watch = Watch::new(s, noon).unwrap();
+        // Start at 12:00:10, before the notes are read, so the passage
+        // begins later in the same minute as the berth.
+        let wrote = watch
+            .apply(fix(37.8663, -122.3148, 5.0, noon + 10), noon + 10)
+            .unwrap()
+            .join("\n");
+        assert!(wrote.contains("under way"), "{wrote}");
+        assert!(watch.underway);
+        let wrote = watch.follow_trip(noon + 50).unwrap().join("\n");
+        assert!(wrote.contains("berthed; the track is closed"), "{wrote}");
+        assert!(!watch.underway);
+        assert_eq!(tracks_in(&vault).len(), 1);
+        let text = fs::read_to_string(watch.day_path()).unwrap();
+        assert!(text.contains("tracks/"), "{text}");
     }
 
     #[test]

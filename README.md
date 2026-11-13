@@ -184,7 +184,8 @@ omalogbook strike 3              # rule a line through one
 ```
 
 Run the recorder as a user service, so it is there before the `/depart` and
-after a reboot. It idles until a trip is open and records until the `/berth`.
+after a reboot. It records passages when the boat is under way, and while a
+trip is open it keeps the track until the `/berth`.
 
 A user unit starts with the user's session. To have it start at boot, before
 anyone logs in, turn on lingering once:
